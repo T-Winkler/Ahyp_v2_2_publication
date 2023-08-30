@@ -1,0 +1,665 @@
+---
+title: "snpEff_database_creation"
+author: "twinkle1"
+date: '2022-09-08'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table)
+library(QTLseqr)
+library(ggtranscript)
+library(reshape2)
+library(cowplot)
+library(patchwork)
+knitr::opts_knit$set(root.dir = "/home/tom/Documents/projects/Ahyp_v2_2_publication/")
+```
+
+## Database creation
+
+Run snpEff database creation on the fixed annotation files. Copy the fixed files to the snpeff directory:
+
+```{bash}
+mkdir -p data/annotation_analysis/snpEff/databases/AHv2.2/
+
+# snpEff analysis
+# add genome file to snpEff database
+cp polished_genome_annotation/assembly/Ahypochondriacus_2.2_polished.softmasked.fasta data/annotation_analysis/snpEff/databases/AHv2.2/sequences.fa
+# add annotation file to snpEff database
+cp data/reannotation_correction/manual/Ahypochondriacus_2.2_polished_corrected.gff data/annotation_analysis/snpEff/databases/AHv2.2/genes.gff
+cp data/reannotation_correction/manual/Ahypochondriacus_2.2_polished_corrected.cds.fasta data/annotation_analysis/snpEff/databases/AHv2.2/cds.fa
+cp data/reannotation_correction/manual/Ahypochondriacus_2.2_polished_corrected.prot.fasta data/annotation_analysis/snpEff/databases/AHv2.2/protein.fa
+
+# create database:
+java -jar /home/tom/Documents/tools/snpEff/snpEff.jar build -v AHv2.2
+```
+
+
+## snpEff run
+
+Run using data from Markus color/sterility mapping bulks:
+
+```{bash}
+mkdir -p data/annotation_analysis/snpEff/bsa_sterility_color/analysis
+
+# get data and run snpEff on the example data:
+java -jar /home/tom/Documents/tools/snpEff/snpEff.jar -csvStats data/annotation_analysis/snpEff/bsa_sterility_color/output.stats.csv -v AHv2.2 data/annotation_analysis/snpEff/bsa_sterility_color/gatk_filter_maxmissing05_biallelic.vcf.gz > data/annotation_analysis/snpEff/bsa_sterility_color/output.snpeff.vcf
+
+
+# two files are not saved in the output directory but in the current working directory
+mv snpEff_* data/annotation_analysis/snpEff/bsa_sterility_color/
+
+# it is challenging to process the snpEff output for downstream analysis
+# snpsift is a software package distributed with snpEff that eases processing
+cat data/annotation_analysis/snpEff/bsa_sterility_color/output.snpeff.chr16.vcf | /home/tom/Documents/tools/snpEff/scripts/vcfEffOnePerLine.pl | java -jar /home/tom/Documents/tools/snpEff/SnpSift.jar extractFields - CHROM POS "ANN[*].GENEID" "ANN[*].EFFECT" > data/annotation_analysis/snpEff/bsa_sterility_color/output.snpeff.chr16.snpsift.txt
+```
+
+
+## Analysis
+
+Analyze the snpEff test run and check for high impact variants that can be manually analysed in genes of the betalain and flavonoid pathways.
+
+```{r}
+# load in snpEff summary file
+snpEff.tab <- read.table("data/annotation_analysis/snpEff/bsa_sterility_color/snpEff_genes.txt", skip = 1, header = T, comment.char = "")
+colnames(snpEff.tab)[1] <- "GeneName"
+
+# load in list of betalain and flavonoid pathway genes
+color_pathways <- read.csv("data/manual_sheets/color_pathway_genes.csv", header = T)
+snpEff.tab <- left_join(snpEff.tab, color_pathways, by = c("GeneId" = "Gene_id"))
+
+# check color pathway genes for high impact variants, moderate and in theory also modifier might also be relevant
+snpEff.tab %>%
+  filter(GeneName %in% color_pathways$Gene_id) %>%
+  #filter(variants_impact_HIGH > 0) %>%
+  summarise(GeneId = GeneId,
+            TranscriptId = TranscriptId,
+            Gene = Gene,
+            Pathway = Pathway,
+            variants_impact_HIGH = variants_impact_HIGH,
+            variants_impact_MODERATE = variants_impact_MODERATE,
+            variants_impact_MODIFIER = variants_impact_MODIFIER)
+# high impact variant in one of the five F3-H candidate genes, but also in CYP76AD candidate gene
+```
+
+Subset a more detailed table of betalain genes and their respective positions in the genome:
+
+```{r}
+# load in list of betalain and flavonoid pathway genes
+color_pathways <- read.csv("data/manual_sheets/color_pathway_genes.csv", header = T)
+betalain_chr16 <- color_pathways %>%
+  filter(Gene_id == "AHp022773" | Gene_id == "AHp023148" | Gene_id == "AHp023147")
+# add BvMYB1like gene
+betalain_chr16[2,] <- c("BvMYB1like", "Betalain", "AHp022773")
+
+write.table(betalain_chr16, 
+            file = "data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16.txt",
+            quote = F)
+
+# set up function for reading in a gtf file
+read.gtf <- function(file){
+  # based on: https://www.biostars.org/p/272889/
+  # read in the gtf file:
+  gff <- fread(file)
+  setnames(gff, names(gff), c("chr","source","type","start","end","score","strand","phase","attributes"))
+  # subset attribute column into the gene and transcript id columns
+  # function for extracting the two attributes
+  extract_attributes <- function(gtf_column, att_of_interest){
+    att <- strsplit(gtf_column, "; ")
+    att <- gsub("\"","",unlist(att))
+    att <- gsub(";","",unlist(att))
+    if(!is.null(unlist(strsplit(att[grep(att_of_interest, att)], " ")))){
+      return( unlist(strsplit(att[grep(att_of_interest, att)], " "))[2])
+    }else{
+      return(NA)
+    }
+  }
+  # using the function to subset gene and transcript id:
+  gff$gene_id <- unlist(lapply(gff$attributes, extract_attributes, "gene"))
+  gff$transcript_id <- unlist(lapply(gff$attributes, extract_attributes, "transcript"))
+  return(gff)
+}
+
+# read in annotation
+annotation.gtf <- read.gtf("polished_genome_annotation/annotation/Ahypochondriacus_2.2_polished_corrected.gtf")
+
+# subset betalain genes
+betalain_chr16.gtf <- annotation.gtf %>%
+  filter(gene_id %in% betalain_chr16$Gene_id)
+
+saveRDS(betalain_chr16.gtf, file = "data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16.gtf")
+
+
+
+#################### generate BED file of relevant positions
+betalain_chr16.gtf <- readRDS("data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16.gtf")
+# snpeff by default uses the 5000 positions before and after a gene
+# create a bed file that can be used to subset the vcf file into relevant variants
+betalain_chr16.bed <- betalain_chr16.gtf %>%
+  filter(type == "transcript") %>%
+  mutate(chrom = chr,
+         chromStart = start - 5000,
+         chromEnd = end + 5000) %>%
+  select(chrom, chromStart, chromEnd) %>%
+  unique()
+
+write_tsv(betalain_chr16.bed, file = "data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16.bed")  
+```
+
+Subset the vcf file and extract the allele frequencies using vcftools
+
+```{bash}
+# to extract the format field
+vcftools --gzvcf data/annotation_analysis/snpEff/bsa_sterility_color/gatk_filter_maxmissing05_biallelic.vcf.gz --bed data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16.bed --indv AM_00331_gf --indv AM_00331_rf --indv AM_00332_gl --indv AM_00332_rl --extract-FORMAT-info AD --out data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16
+# also subset the vcf file to include only the variants around the betalain genes
+vcftools --gzvcf data/annotation_analysis/snpEff/bsa_sterility_color/gatk_filter_maxmissing05_biallelic.vcf.gz --bed data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16.bed --indv AM_00331_gf --indv AM_00331_rf --indv AM_00332_gl --indv AM_00332_rl --recode --recode-INFO-all --out data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16
+```
+
+
+Plot the annotated variants in betalain genes. In general, it could be interesting to continue analysis based on genes which are not already on our list which show knockout variants. Load required data
+
+```{r}
+# read in betalain gene list on chr 16
+betalain_chr16 <- read.table("data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16.txt")
+
+# read in variant count of extracted SNPs
+allele_depth.tab <- read.table(file = "data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16.AD.FORMAT", header = T)
+allele_depth.tab <- allele_depth.tab %>%
+  mutate(customid = paste0("16_", POS))
+# allele depth denotes first the reference allele and then the alternative allele, only those reads which were involved in allele calling
+# split allele depth into two columns
+allele_depth.tab <- separate(data = allele_depth.tab, col = "AM_00331_gf", sep = ",", into = c("AM00331_gf_ref", "AM00331_gf_alt"))
+allele_depth.tab <- separate(data = allele_depth.tab, col = "AM_00331_rf", sep = ",", into = c("AM00331_rf_ref", "AM00331_rf_alt"))
+allele_depth.tab <- separate(data = allele_depth.tab, col = "AM_00332_gl", sep = ",", into = c("AM00332_gl_ref", "AM00332_gl_alt"))
+allele_depth.tab <- separate(data = allele_depth.tab, col = "AM_00332_rl", sep = ",", into = c("AM00332_rl_ref", "AM00332_rl_alt"))
+
+# read in snpsift output and subset for betalain genes
+snpsift.tab <- read.table("data/annotation_analysis/snpEff/bsa_sterility_color/output.snpeff.chr16.snpsift.txt", header = T)
+snpsift.tab <- snpsift.tab %>%
+  filter(ANN....GENEID %in% betalain_chr16$Gene_id) %>%
+  mutate(customid = paste0("16_", POS)) %>% # add customid column to snpsift table to enable merging of the two tables
+  unique()
+
+
+# read in betalain gene gtf on chr 16
+betalain_chr16.gtf <- readRDS("data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16.gtf")
+
+# join the snpsift table with the allele depth table
+joined.df <- left_join(snpsift.tab, allele_depth.tab, by = c("CHROM", "POS", "customid"))
+```
+
+Set up plotting functions:
+
+```{r}
+# annotation is a loaded gtf file
+# variants is the dataframe of all variants and allele depths
+# gene is the character string of the gene that is supposed to be plotted
+# transcript is the transcript character string of the gene that is to be plotted
+# bulk1 and bulk2 denote the two bulks (character strings) which are to be plotted
+
+filter_variants <- function(variants, gene, bulk1_ref, bulk1_alt, bulk2_ref, bulk2_alt){
+  # prepare data by only keeping the relevant gene variants and samples
+  dat <- variants %>% 
+    filter(ANN....GENEID == gene) %>%
+    select(CHROM, POS, ANN....EFFECT, bulk1_ref, bulk1_alt, bulk2_ref, bulk2_alt) %>%
+    filter(bulk1_alt != 0 & bulk2_alt != 0)
+  # as numeric
+  dat[,4] <- as.numeric(dat[,4])
+  dat[,5] <- as.numeric(dat[,5])
+  dat[,6] <- as.numeric(dat[,6])
+  dat[,7] <- as.numeric(dat[,7])
+  # convert to ratios
+  dat[,5] <- dat[,5]/ (dat[,4] + dat[,5])
+  dat[,4] <- 1 - dat[,5]
+  dat[,7] <- dat[,7]/(dat[,6] + dat[,7])
+  dat[,6] <- 1 - dat[,7]
+  dat <- dat[(dat[,5] != 1) | (dat[,7] != 1),]
+  return(dat)
+}
+
+plot_bulk_comparison <- function(annotation, trans_id, filtered_variants){
+
+  # filter annotation to only include the transcript in question
+  annotation.filtered <- annotation %>%
+    filter(transcript_id == trans_id,
+           type == "CDS")
+  filtered_variants <- filtered_variants[filtered_variants$POS >= min(annotation.filtered$start) & filtered_variants$POS <= max(annotation.filtered$end),]
+  filtered_variants$ANN....EFFECT <- factor(filtered_variants$ANN....EFFECT, levels = c("intron_variant", 
+                                                                                        "synonymous_variant", 
+                                                                                        "missense_variant",
+                                                                                        "stop_gained"))
+  min_pos <- min(annotation.filtered$start)
+  max_pos <- max(annotation.filtered$end)
+  
+  # plot the gene with variants
+  p2 <- ggplot() +
+    geom_range(data = annotation.filtered,
+               aes(xstart = start, xend = end, y = transcript_id),
+               fill = "grey90") +
+    geom_intron(data = to_intron(annotation.filtered),
+                aes(xstart = start, xend = end, y = transcript_id, strand = strand)) +
+    # annotate variants on the gene as stripes
+    geom_rect(data = filtered_variants,
+              aes(xmin = POS-8, xmax = POS+8, ymin=0.75, ymax = 1.25, fill = ANN....EFFECT)) +
+    geom_text(aes(x = 5303500,
+                  y = 1.4,
+                  label = "AhCYP76AD2"),
+              size = 13) +
+    coord_cartesian(xlim = c(min_pos, max_pos)) +
+    labs(y = "",
+         fill = "Variant effect",
+         x = "Position Scaffold 16 (bp)") +
+    theme_classic() +
+    #scale_fill_brewer(palette = "RdBl", direction = -1) + # think about color palette to use
+    scale_fill_viridis_d(direction = -1, 
+                         labels = c("Intron variant", "Synonymous variant", "Missense variant", "Stop gained")) +
+    theme(text = element_text(size = 21),
+          #legend.position = "none",
+          legend.position = "right",
+          plot.margin = unit(c(2, 0, 2, 0), "cm"),
+          axis.line.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          axis.text.x = element_text(size=25),
+          axis.title.x = element_text(size=40),
+          axis.line = element_line(linewidth = 2),
+          legend.text = element_text(size = 30),
+          legend.title = element_text(size = 40),
+          axis.ticks = element_line(linewidth = 1.5),
+          axis.ticks.length = unit(.25, "cm"),
+          #axis.ticks.x = element_blank(),
+          #axis.line.x = element_blank(),
+          #axis.text.x = element_blank(),
+          axis.text.y = element_blank())
+  legend <- get_legend(p2)
+  p2 <- p2 + theme(legend.position = "none")
+  out_plot <- plot_grid(p2, legend,
+                        nrow = 1,
+                        rel_widths = c(0.75, 0.25))
+  
+  # # rearrange data:
+  # dat1 <- filtered_variants[,-(4:5)]
+  # dat2 <- filtered_variants[,-(6:7)]
+  # dat1.melt <- melt(dat1, id.vars = c("CHROM", "POS", "ANN....EFFECT"))
+  # dat2.melt <- melt(dat2, id.vars = c("CHROM", "POS", "ANN....EFFECT"))
+  # 
+  # # plot relative allele frequency
+  # p1 <- ggplot() +
+  #   geom_col(data = dat1.melt,
+  #          aes(x = POS, y = as.numeric(value), fill = variable), position = "stack", width = 20) +
+  #   xlim(c(min_pos, max_pos)) +
+  #   labs(y = "", 
+  #        fill = "red_bulk", 
+  #        x = "") +
+  #   theme_classic() +
+  #   scale_fill_brewer(palette = "Set1", 
+  #                     labels = c("Reference allele", "Alternative allele"),
+  #                     direction = -1,
+  #                     guide = guide_legend(override.aes = list(alpha = 0))) + # make legend invisible
+  #   theme(text = element_text(size = 21),
+  #         axis.title.y = element_blank(),
+  #         legend.position = "none",
+  #         axis.line.x = element_blank(),
+  #         plot.margin = unit(c(0, 0, 0, 0), "cm"),
+  #         axis.ticks.x = element_blank(),
+  #         axis.text.x = element_blank(),
+  #         axis.title.x = element_blank(),
+  #         legend.title = element_text(color = "transparent"),
+  #         legend.text = element_text(color = "transparent"))
+  # 
+  # bars <- map(unique(dat2.melt$POS)
+  #           , ~geom_col(position = "stack",
+  #                       width = 20
+  #                      , data = dat2.melt %>% filter(POS == .x)))
+  # 
+  # p3 <- ggplot(data = dat2.melt,
+  #              aes(x=POS,
+  #                  y=as.numeric(value),
+  #                  fill=reorder(variable, as.numeric(value)))) +
+  #   bars +
+  #   xlim(c(min_pos, max_pos)) +
+  #   labs(fill = "green_bulk",
+  #        x = "Position on Scaffold 16") +
+  #   theme_classic() +
+  #   scale_fill_brewer(palette = "Set1", 
+  #                     labels = c("Reference allele", "Alternative allele"), 
+  #                     direction = -1,
+  #                     guide = guide_legend(override.aes = list(alpha = 0))) +
+  #   theme(text = element_text(size = 21),
+  #         axis.title.y = element_blank(),
+  #         legend.position = "none",
+  #         legend.title = element_text(color = "transparent"),
+  #         legend.text = element_text(color = "transparent"))
+  
+  
+  #allplots <- p1 + p2 + p3 + 
+    #plot_layout(ncol = 1)
+  return(out_plot)
+}
+```
+
+
+
+Plot for CYP76AD2:
+
+```{r}
+# plot for one gene
+# filter all homozygous reference variants
+dat <- joined.df %>% 
+  filter(ANN....GENEID == "AHp023148") %>%
+  filter(AM00332_gl_alt != 0)
+
+
+
+
+
+# filter to only include specific gene
+dat.filtered <- filter_variants(variants = joined.df, 
+                  gene = "AHp023148",
+                  bulk1_ref = "AM00332_gl_ref",
+                  bulk1_alt = "AM00332_gl_alt",
+                  bulk2_ref = "AM00332_rl_ref",
+                  bulk2_alt = "AM00332_rl_alt")
+
+
+
+AM00332_CYP76AD <- plot_bulk_comparison(annotation = betalain_chr16.gtf,
+                                        trans_id = "AHp023148.1",
+                                        filtered_variants = dat.filtered)
+
+
+# increase the size of the annotated transcript, also create the legend as its own plot and add with cowplot
+AM00332_CYP76AD
+
+
+ggsave(filename = "plots/CYP76AD_AHp023148_bsa_snpeff.png",
+       width = 14, 
+       height = 6)
+```
+
+
+Plot for DODA1:
+
+```{r}
+# plot for one gene
+# filter all homozygous reference variants
+dat <- joined.df %>% 
+  filter(ANN....GENEID == "AHp023147") %>%
+  filter(AM00332_gl_alt != 0)
+
+
+
+# filter to only include specific gene
+dat.filtered <- filter_variants(variants = joined.df, 
+                  gene = "AHp023147",
+                  bulk1_ref = "AM00332_gl_ref",
+                  bulk1_alt = "AM00332_gl_alt",
+                  bulk2_ref = "AM00332_rl_ref",
+                  bulk2_alt = "AM00332_rl_alt")
+
+
+
+AM00332_DODA1 <- plot_bulk_comparison(annotation = betalain_chr16.gtf,
+                                        trans_id = "AHp023147.1",
+                                        filtered_variants = dat.filtered)
+
+
+# increase the size of the annotated transcript, also create the legend as its own plot and add with cowplot
+AM00332_DODA1
+```
+
+Write a function to make the same plot for all of the betalain pathway genes
+
+```{r}
+plot_all_genes <- function(gene_id, transcript_id, bulk){
+  # create a list in the beginning to save all plots in, use this for saving afterwards
+  output <- list()
+  for (i in 1:length(transcript_id)){
+      # filter all homozygous reference variants
+      dat <- joined.df %>% 
+        filter(ANN....GENEID == gene_id[i]) %>%
+        filter(AM00332_gl_alt != 0)
+      # filter to only include specific gene
+      if (bulk == "AM00332"){
+        dat.filtered <- filter_variants(variants = joined.df, 
+                      gene = gene_id[i],
+                      bulk1_ref = "AM00332_gl_ref",
+                      bulk1_alt = "AM00332_gl_alt",
+                      bulk2_ref = "AM00332_rl_ref",
+                      bulk2_alt = "AM00332_rl_alt")
+      } else if (bulk == "AM00331"){
+        dat.filtered <- filter_variants(variants = joined.df, 
+                                    gene = gene_id[i],
+                                    bulk1_ref = "AM00331_gf_ref",
+                                    bulk1_alt = "AM00331_gf_alt",
+                                    bulk2_ref = "AM00331_rf_ref",
+                                    bulk2_alt = "AM00331_rf_alt")
+      } else {
+        return("Error: check bulk variable")
+      }
+      # plot and save in a list
+      output[[i]] <- plot_bulk_comparison(annotation = betalain_chr16.gtf,
+                                            trans_id = transcript_id[i],
+                                            filtered_variants = dat.filtered)
+  }
+  return(output)
+}
+
+gene_id <- unique(betalain_chr16.gtf$gene_id)
+transcript_id <- unique(betalain_chr16.gtf$transcript_id)[-2]
+
+# plot for color loss bulk
+bulk_AM00332_plot_list <- plot_all_genes(gene_id = gene_id,
+                                         transcript_id = transcript_id,
+                                         bulk = "AM00332")
+
+for (i in 1:length(bulk_AM00332_plot_list)){
+  ggsave(filename = paste0("plots/BSA/AM00332_color_loss_", gene_id[i], ".png"),
+         plot = bulk_AM00332_plot_list[[i]],
+         width = 14, 
+         height = 6)
+}
+
+# plot for regulator bulk
+bulk_AM00331_plot_list <- plot_all_genes(gene_id = gene_id,
+                                         transcript_id = transcript_id,
+                                         bulk = "AM00331")
+
+for (i in 1:length(bulk_AM00331_plot_list)){
+  ggsave(filename = paste0("plots/BSA/AM00331_color_loss_", gene_id[i], ".png"),
+         plot = bulk_AM00331_plot_list[[i]],
+         width = 14, 
+         height = 6)
+}
+```
+
+
+
+Zoom in on a specific a specific portion of the plot, centered around the three SNPs of interest:
+
+```{r}
+# adjust function to plot only a part of exon 2 to visualize the variants
+plot_bulk_comparison_zoom <- function(annotation, trans_id, filtered_variants){
+  # filter annotation to only include the transcript in question
+  annotation.filtered <- annotation %>%
+    filter(transcript_id == trans_id,
+           type == "CDS")
+  filtered_variants <- filtered_variants[filtered_variants$POS >= min(annotation.filtered$start) & filtered_variants$POS <= max(annotation.filtered$end),]
+  filtered_variants$ANN....EFFECT <- factor(filtered_variants$ANN....EFFECT, levels = c("intron_variant", 
+                                                                                        "synonymous_variant", 
+                                                                                        "missense_variant",
+                                                                                        "stop_gained"))
+  # plot the gene with variants
+  p2 <- ggplot() +
+    geom_range(data = annotation.filtered,
+               aes(xstart = start, xend = end, y = transcript_id),
+               #fill = "white") +
+               fill = "grey90") +
+    geom_intron(data = to_intron(annotation.filtered),
+                aes(xstart = start, xend = end, y = transcript_id, strand = strand)) +
+    # annotate variants on the gene as stripes
+    geom_rect(data = filtered_variants,
+              aes(xmin = POS-1, xmax = POS+1, ymin=0.75, ymax = 1.25, fill = ANN....EFFECT)) +
+    labs(y = "",
+         fill = "Variant effect") +
+    theme_classic() +
+    #scale_fill_brewer(palette = "RdBu", direction = -1) +
+    scale_fill_viridis_d(direction = -1) +
+    coord_cartesian(xlim = c(5305700, 5305870)) +
+    theme(text = element_text(size = 18),
+          #legend.margin = margin(5, 40, 5, 40),
+          axis.line.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          axis.text.y = element_blank(),
+          axis.ticks.x = element_blank(),
+          axis.line.x = element_blank(),
+          axis.text.x = element_blank(),
+          legend.position = "none") # this increases the legend margin
+  # margin has to be increased so that other legends are not cut off, 
+  # since the first legend seems to determine the margins
+  
+  # rearrange data:
+  dat1 <- filtered_variants[,-(4:5)]
+  dat2 <- filtered_variants[,-(6:7)]
+  dat1.melt <- melt(dat1, id.vars = c("CHROM", "POS", "ANN....EFFECT"))
+  dat2.melt <- melt(dat2, id.vars = c("CHROM", "POS", "ANN....EFFECT"))
+  
+  # plot relative allele frequency
+  p1 <- ggplot() +
+    geom_col(data = dat1.melt,
+           aes(x = POS, y = as.numeric(value), fill = variable), position = "stack", width = 2) +
+    xlim(c(min(annotation.filtered %>% select(start)),
+         max(annotation.filtered %>% select(end)))) +
+    labs(y = "Red bulk\n allele depth", 
+         fill = "red_bulk", 
+         x = "") +
+    theme_classic() +
+    scale_fill_brewer(palette = "Set1", 
+                      labels = c("Reference allele", "Alternative allele"),
+                      direction = -1,
+                      guide = guide_legend(override.aes = list(alpha = 0))) + # make legend invisible
+    coord_cartesian(xlim = c(5305700, 5305870)) +
+    theme(#text = element_text(size = 21),
+          axis.text = element_text(size=25),
+          axis.ticks = element_line(linewidth = 1.5),
+          axis.ticks.length = unit(.25, "cm"),
+          axis.line = element_line(linewidth = 2),
+          #axis.title.y = element_blank(),
+          axis.title.y = element_text(size=30),
+          axis.line.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.position = "none",
+          axis.text.x = element_blank(),
+          axis.title.x = element_blank(),
+          legend.title = element_text(color = "transparent"),
+          legend.text = element_text(color = "transparent"))
+  
+  bars <- map(unique(dat2.melt$POS)
+            , ~geom_col(position = "stack",
+                        width = 2
+                       , data = dat2.melt %>% filter(POS == .x)))
+  
+  p3 <- ggplot(data = dat2.melt,
+               aes(x=POS,
+                   y=as.numeric(value),
+                   fill=reorder(variable, as.numeric(value)))) +
+    bars +
+    xlim(c(min(annotation.filtered %>% select(start)),
+        max(annotation.filtered %>% select(end)))) +
+    labs(x = "Position Scaffold 16 (bp)",
+         fill = "",
+         y = "Green bulk\n allele depth") +
+    theme_classic() +
+    scale_fill_brewer(palette = "Set1", 
+                      labels = c("Reference allele", "Alternative allele"),
+                      #guide = guide_legend(override.aes = list(alpha = 0)),
+                      direction = -1) +
+    coord_cartesian(xlim = c(5305700, 5305870)) +
+    theme(#text = element_text(size = 21),
+          axis.text = element_text(size=25),
+          axis.title.x = element_text(size=40),
+          axis.title.y = element_text(size=30),
+          axis.line = element_line(linewidth = 2),
+          legend.text = element_text(size = 30),
+          legend.title = element_text(size = 30),
+          axis.ticks = element_line(linewidth = 1.5),
+          axis.ticks.length = unit(.25, "cm"))
+          #legend.title = element_text(color = "transparent"),
+          #legend.position = "none",
+          #legend.text = element_text(color = "transparent"),
+          #axis.title.y = element_blank())
+  # create a plot with only the legend
+  legend <- get_legend(p3)
+  p3 <- p3 + theme(legend.position = "none")
+  # combine the three plots
+  allplots <- plot_grid(p1, p2, p3,
+                        ncol = 1, 
+                        align = "v",
+                        rel_heights = c(0.3, 0.25, 0.45))
+  
+  
+  # combine other plots with legend
+  allplots <- plot_grid(legend, allplots, 
+                        ncol = 1,
+                        #align = "v",
+                        rel_heights = c(0.2,0.8))
+  return(allplots)
+}
+
+AM00332_CYP76AD_zoom <- plot_bulk_comparison_zoom(annotation = betalain_chr16.gtf,
+                             trans_id = "AHp023148.1",
+                             filtered_variants = dat.filtered)
+AM00332_CYP76AD_zoom
+
+ggsave(filename = "plots/CYP76AD_AHp023148_bsa_snpeff_zoom.png")
+```
+
+
+
+
+Combine with the output from the read_count_analysis_from_bam.Rmd script:
+
+```{r}
+# plot using cowplot plot grid
+# first combine the bottom row into a single plot
+bottom_row <- plot_grid(AM00332_CYP76AD_zoom,
+                        plot.gf,
+                        align = "v",
+                        nrow = 1,
+                        rel_widths = c(0.35, 0.6),
+                        axis = "b",
+                        labels = c("D", "E"),
+                        label_size = 30)
+
+bottom_row
+
+complete_grid <- plot_grid(AM00332_CYP76AD,
+                           bottom_row,
+                           nrow = 2,
+                           labels = c("C", NA),
+                           label_size = 30,
+                           rel_heights = c(0.3, 0.7))
+
+complete_grid
+
+
+grid_with_BSA <- plot_grid(cowplot_leaf, complete_grid,
+                           nrow = 2,
+                           rel_heights = c(0.3, 0.7))
+#grid_with_BSA
+
+# save plot
+ggsave(filename = "plots/BSA_with_grid.png",
+       plot = grid_with_BSA,
+       width = 25,
+       height = 20,
+       bg = "white",
+       dpi = 500)
+```
+
+
+
+
+
+

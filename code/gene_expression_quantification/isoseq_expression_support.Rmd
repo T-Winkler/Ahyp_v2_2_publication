@@ -1,0 +1,85 @@
+---
+title: "isoseq_support_for_annotation"
+author: "twinkle1"
+date: "2023-02-08"
+output: html_document
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table)
+knitr::opts_knit$set(root.dir = "/home/tom/Documents/projects/Ahyp_v2_2_publication/")
+```
+
+
+This script assesses the isoseq support for each annotated transcript.
+
+Function to read in gtf file:
+
+```{r}
+# set up function for reading in a gtf file
+read.gtf <- function(file){
+  # based on: https://www.biostars.org/p/272889/
+  # read in the gtf file:
+  gff <- fread(file)
+  setnames(gff, names(gff), c("chr","source","type","start","end","score","strand","phase","attributes"))
+  # subset attribute column into the gene and transcript id columns
+  # function for extracting the two attributes
+  extract_attributes <- function(gtf_column, att_of_interest){
+    att <- strsplit(gtf_column, "; ")
+    att <- gsub("\"","",unlist(att))
+    att <- gsub(";","",unlist(att))
+    if(!is.null(unlist(strsplit(att[grep(att_of_interest, att)], " ")))){
+      return( unlist(strsplit(att[grep(att_of_interest, att)], " "))[2])
+    }else{
+      return(NA)
+    }
+  }
+  # using the function to subset gene and transcript id:
+  gff$gene_id <- unlist(lapply(gff$attributes, extract_attributes, "gene"))
+  gff$transcript_id <- unlist(lapply(gff$attributes, extract_attributes, "transcript"))
+  return(gff)
+}
+```
+
+Bash script to run gffcompare for the isoseq to reference annotation comparison.
+
+```{bash}
+mkdir data/gene_expression_quantification/isoseq/
+
+# run gffcompare
+/home/tom/Documents/tools/gffcompare/gffcompare -r data/isoseq/sqanti/output_polished/combined.collapsed.min_fl_2.filtered_corrected.gtf polished_genome_annotation/annotation/Ahypochondriacus_2.2_polished_corrected.gtf
+# move to output directory
+mv gffcmp.* data/gene_expression_quantification/isoseq/
+```
+
+
+It might be easier to use the output of gffcompare instead of sqanti:
+
+
+```{r}
+# read in tracking file
+gff_tracking <- read.table(file = "data/gene_expression_quantification/isoseq/gffcmp.tracking")
+gff_tracking$V4 <- as.factor(gff_tracking$V4)
+colnames(gff_tracking) <- c("locus", "xlocus", "isoseq_transcript", "code", "reference_transcript")
+
+# overview
+summary(gff_tracking$code)
+
+# matching exactly the intron chain of isoseq transcripts
+# contained "c" reference transcripts and equal transcripts "="
+sum(summary(gff_tracking$code)[1:2])
+sum(summary(gff_tracking$code)[1:2])/nrow(gff_tracking)
+
+# multi-exon with atleast one splice junction match
+sum(summary(gff_tracking$code)[1:2]+summary(gff_tracking$code)[5])
+sum(summary(gff_tracking$code)[1:2]+summary(gff_tracking$code)[5])/nrow(gff_tracking)
+
+# add single column reference transcript
+gff_tracking$reference_transcript_short <- matrix(unlist(strsplit(x = gff_tracking$reference_transcript, split = "\\|")), ncol = 7, byrow = T)[,2]
+# all transcripts there?
+length(unique(gff_tracking$reference_transcript_short)) #28074
+```
+
+

@@ -1,0 +1,578 @@
+---
+title: "Reannotation_correction"
+author: "twinkle1"
+date: "2/18/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table)
+library(GenomicRanges)
+library(seqinr)
+knitr::opts_knit$set(root.dir = "/home/tom/Documents/projects/Ahyp_v2_2_publication/")
+```
+
+
+## Introduction
+
+Run TSEBRA to combine the computational annotation with Iso-Seq data. Check the generated annotation (based on the merge of Isoseq data with the braker2 predictions) for redundancies. Remove redundant gene structures and rename all genes using a unified rule set.
+
+## Setup
+
+```{r}
+# set up function for reading in a gtf file
+read.gtf <- function(file){
+  # based on: https://www.biostars.org/p/272889/
+  # read in the gtf file:
+  gff <- fread(file)
+  setnames(gff, names(gff), c("chr","source","type","start","end","score","strand","phase","attributes"))
+  # subset attribute column into the gene and transcript id columns
+  # function for extracting the two attributes
+  extract_attributes <- function(gtf_column, att_of_interest){
+    att <- strsplit(gtf_column, "; ")
+    att <- gsub("\"","",unlist(att))
+    att <- gsub(";","",unlist(att))
+    if(!is.null(unlist(strsplit(att[grep(att_of_interest, att)], " ")))){
+      return( unlist(strsplit(att[grep(att_of_interest, att)], " "))[2])
+    }else{
+      return(NA)
+    }
+  }
+  # using the function to subset gene and transcript id:
+  gff$gene_id <- unlist(lapply(gff$attributes, extract_attributes, "gene"))
+  gff$transcript_id <- unlist(lapply(gff$attributes, extract_attributes, "transcript"))
+  return(gff)
+}
+
+# Create function for converting gtf dataframe to genomic ranges onbject
+Granges_from_gtf <- function(gtf){
+  # requires the GRanges and tidyverse packages
+  gene_structures <- gtf %>%
+  group_by(transcript_id) %>% # group by transcript id
+  summarise(gene_start = min(start),
+            gene_end = max(end),
+            seqnames = unique(chr), # all sequences should be on the same chromosome
+            gene_strand = unique(strand))
+  # use the gene_structures object to create the genomic ranges object
+  gene_ranges <- GRanges(seqnames = gene_structures$seqnames, 
+                         ranges = IRanges(start=gene_structures$gene_start, 
+                                          end=gene_structures$gene_end,
+                                          names = gene_structures$transcript_id), 
+                         strand = gene_structures$gene_strand)
+  return(gene_ranges)
+}
+
+
+# write a function to extract the set of nonoverlapping features from the gtf file
+# define query and subject as GRanges objects
+extract_nonoverlaps <- function(query_granges, subject_granges, subject_gtf){
+  # find overlaps, including the strand information
+  overlaps <- findOverlaps(query = query_granges, subject = subject_granges)
+  # get the ids of the query sequences that overlap
+  overlapping_ids <- subject_granges@ranges@NAMES[overlaps@to]
+  # filter the gtf for all sequences that do not overlap
+  non_overlapping_gtf <- subject_gtf[!subject_gtf$transcript_id %in% overlapping_ids]
+  return(non_overlapping_gtf)
+}
+
+# Create a function to report all transcripts within a read.gtf object, that have both a start and stop codons annotated
+report_both_codons <- function(gtf_object){
+  # report all those transcript ids in the gtf file, which have both a start and a stop codon
+  # summarize by transcript and type
+  x <- gtf_object %>%
+      group_by(transcript_id, type) %>%
+      summarise(count = n())
+  # get the names of subsets with exactly start or stop codon
+  ids_with_start <- x[x$type == "start_codon" & x$count == 1,]$transcript_id
+  ids_with_stop <- x[x$type == "stop_codon" & x$count == 1,]$transcript_id
+  # ids with both codons are returned
+  return(ids_with_start[ids_with_start %in% ids_with_stop])
+}
+
+
+# extract all overlapping sequences in lists with their respective other overlapping sequences
+lists.of.overlaps <- function(overlaps){
+  # work with a while loop
+  # get all ids of the selfoverlapping sequences (only once for each id)
+  selfoverlap <- unique(overlaps@from[duplicated(overlaps@from)])
+  # initialize
+  list.out <- list()
+  vec <- c()
+  i <- 1
+  
+  # while there are still selfoverlapping sequences
+  while (length(selfoverlap) > 0){
+    # check each overlap if it belongs to a selfoverlapping sequence
+    for (j in 1:length(overlaps)){
+      # if it belongs to a selfoverlap, save the overlap (to, not from) to vector
+      if (overlaps@from[j] == selfoverlap[1]) {
+        vec <- c(vec, overlaps@to[j])
+      }
+    }
+    # add vector to list, use i as iteration counter for accessing list position
+    list.out[[i]] <- vec
+    # prune sequences in vector from selfoverlap id vector so as not to create duplicated objects in list
+    selfoverlap <- selfoverlap[!selfoverlap %in% vec]
+    # reset vector and add iteration count
+    vec <- c()
+    i <- i+1
+  }
+  return(list.out)
+}
+
+# function to get the duplicated elements from list output
+get_dups <- function(list){
+  dups <- base::Reduce(generics::intersect, list(unlist(list)))
+  return(dups[duplicated(base::Reduce(generics::intersect, list(unlist(list))))])
+}
+
+# function for concatenating list elements with (at least partially) similar entries
+cat.elements <- function(list){
+  # initialize
+  vec <- c()
+  # starting with second element, for each element in the list
+  for (i in 2:length(list)){
+    # for each position in list element
+    for (j in 1:length(list[[i]])){
+      # if the value occurred in the list before
+      if (list[[i]][j] %in% unlist(list[1:(i-1)])){
+        # for each list element before i
+        for (k in 1:(i-1)){
+          # for each position in these list elements
+          for (l in 1:length(list[[k]])){
+            # if the current value is equal to the value that occurred before
+            if (list[[i]][j] == list[[k]][l]){
+              list[[k]] <- unique(c(list[[i]], list[[k]])) # add both into one entry
+              vec <- c(vec, i) # collect rows to remove
+            }
+          }
+        }
+      }
+    }
+  }
+  # remove elements that have been concatenated before and return list
+  return(list[-vec])
+}
+
+# part of the read.gtf function
+extract_attributes <- function(gtf_column, att_of_interest){
+    att <- strsplit(gtf_column, "; ")
+    att <- gsub("\"","",unlist(att))
+    att <- gsub(";","",unlist(att))
+    if(!is.null(unlist(strsplit(att[grep(att_of_interest, att)], " ")))){
+      return( unlist(strsplit(att[grep(att_of_interest, att)], " "))[2])
+    } else {
+      return(NA)
+    }
+}
+```
+
+
+## Main
+
+Combine computational annotation and Isoseq transcripts into a single genome annotation. Predict ORFs in the transcript sequences using CPC2.
+
+```{bash}
+mkdir data/isoseq/cpc/
+
+# Predict coding sequence in braker2 transcripts for TSEBRA
+tools/CPC2_standalone-1.0.1/bin/CPC2.py \
+	-i data/isoseq/sqanti/output_polished/combined.collapsed.min_fl_2.filtered_corrected.fasta \
+	-o data/isoseq/cpc2/cpc2_from_sqanti \
+	--ORF
+```
+
+Convert CPC2 output into a gtf file of predicted transcript coding sequences. CPC2 output annotates the CDS based on transcript internal coordinates. In order to generate the gtf file, the transcript internal coordinates have to be converted into genome coordinates, while keeping track of exon boundaries and strandedness.
+
+```{r}
+# prepare a bed file from the results of cpc2
+cpc2 <- read.table("data/isoseq/cpc2/cpc2_from_sqanti.txt")
+# filter for coding transcripts with an intact ORF
+cpc2 <- cpc2 %>%
+  filter(V9 == "coding" & V6 == 1) %>%
+  summarise(ID=V1, start=V7-1, end=V7+(V3*3)-1)
+# write as bed file for extraction of CDS
+write_tsv(cpc2, 
+          file="data/isoseq/cpc2/cpc2_extraction.bed",
+          quote = "none",
+          col_names = F)
+
+# Convert cpc2 output to gtf file:
+# read in gtf file of isoseq transcript data
+isoseq.gtf <- read.gtf("data/isoseq/sqanti/output_polished/combined.collapsed.min_fl_2.filtered_corrected.gtf")
+isoseq.gtf <- isoseq.gtf[isoseq.gtf$type == "exon",]
+
+# read in cpc2 output file, the bed file used for extraction does suffice
+cpc2.bed <- read.table("data/isoseq_data/cpc2/cpc2_extraction.bed")
+colnames(cpc2.bed) <- c("ID", "CDS_start", "CDS_end")
+# bed format is 0 based, convert back to a 1 based format, end position does not have to converted
+cpc2.bed$CDS_start <- cpc2.bed$CDS_start+1
+
+# create vector of all ids to loop through
+ids <- as.character(unique(cpc2.bed$ID))
+
+# initialize vectors
+stranded <- c()
+output <- c()
+
+# for each transcript id
+for (i in 1:length(ids)){
+  # subset gtf file
+  gtf.subset <- isoseq.gtf[isoseq.gtf$transcript_id == ids[i],]
+  gtf.subset <- gtf.subset %>%
+      arrange(start)
+  # create vector of genomic positions from the exon features
+  position <- c()
+  for (j in 1:nrow(gtf.subset)){
+    position <- c(position, gtf.subset[[j,4]]:gtf.subset[[j,5]])
+  }
+  # include strand information
+  stranded <- gtf.subset[[1,7]]
+  # reverse order of elements for minus strand
+  if (stranded == "-"){
+    position <- rev(position)
+  }
+  # get the positions that are supposed to be extracted
+  cpc2.subset <- cpc2.bed[cpc2.bed$ID == ids[i],]
+  cds_coordinates <- position[cpc2.subset$CDS_start:cpc2.subset$CDS_end]
+  # to calculate the exon ends, shift the cds_coordinate vector by one position, create a pseudovalue for the last entry
+  shifted <- cds_coordinates[-1]
+  shifted[length(shifted)+1] <- shifted[length(shifted)]+1
+  # which values change by more than 1 after one shift? These values represent exon boundaries
+  boundaries <- which(abs(cds_coordinates - shifted) != 1)
+  
+  # create matrix from which to construct the start and end positions of the gtf file
+  # create matrices for single exon genes also, as they are converted to vectors in a later step otherwise
+  if (length(boundaries) > 0){
+    mat <- matrix(data=NA, nrow = 1+length(boundaries), ncol=2)
+    mat[1,1] <- cds_coordinates[1]
+    mat[length(boundaries)+1,2] <- cds_coordinates[length(cds_coordinates)]
+    for (j in 1:length(boundaries)){
+      mat[j,2] <- cds_coordinates[boundaries[j]]
+      mat[j+1,1] <- cds_coordinates[boundaries[j]+1]
+    }
+  } else if (stranded == "+") {
+    mat <- matrix(data=NA, nrow = 1, ncol=2)
+    mat[1,1] <- cds_coordinates[1]
+    mat[1,2] <- cds_coordinates[length(cds_coordinates)]
+  } else {
+    mat <- matrix(data=NA, nrow = 1, ncol=2)
+    mat[1,2] <- cds_coordinates[1]
+    mat[1,1] <- cds_coordinates[length(cds_coordinates)]
+  }
+  
+  # invert matrix for minus strand in order to start with the lowest number
+  # only if there are multiple exons
+  if (stranded == "-" & nrow(mat) != 1){
+    mat <- apply(apply(mat, 1, rev), 1, rev)
+  }
+  
+  # use the previously created gtf structure to store the CDS coordinates
+  # the number of CDS rows is always <= number of exon rows
+  out.subset <- gtf.subset[1:nrow(mat),]
+  for (j in 1:nrow(mat)){
+    out.subset[j,4] <- mat[j,1]
+    out.subset[j,5] <- mat[j,2]
+    out.subset[j,3] <- "CDS"
+  }
+  output <- rbind(output, out.subset)
+  print(i)
+}
+# output represents all CDS records
+
+# write gtf file
+write.table(output[,1:9], 
+            "data/isoseq/cpc2/cpc2_extracted_cds.gtf",
+            col.names = F, row.names = F, quote=F, sep ="\t")
+```
+
+Run TSEBRA to combine computational prediction with Iso-Seq transcripts, using gffread for deduplication:
+
+```{bash}
+mkdir -p data/braker_analysis/TSEBRA
+mkdir -p data/reannotation_correction/computational
+mkdir -p data/reannotation_correction/manual
+
+# -g specifies the braker gtf, -c long read config file, -e braker hint file -l isoseq cpc2 extracted gtf file
+/home/tom/Documents/tools/TSEBRA/bin/tsebra.py \
+	-g data/braker_analysis/external_evidence/fixed_subsets/full_partial_support.gtf \
+	-c /home/tom/Documents/tools/TSEBRA/config/long_reads.cfg \
+	-e data/braker2/polished_prot_rna/hintsfile.gff \
+	-l data/isoseq/cpc2/cpc2_extracted_cds.gtf \
+	-o data/braker_analysis/TSEBRA/tsebra.gtf
+
+
+# To remove any duplicated entries and to cluster the predicted transcripts into loci from the tsebra gtf file I used gffread.
+# -M option merges identical entries, -K option causes stricter merge, -T outputs as gtf (did also output as gff file)
+/home/tom/Documents/tools/gffread-0.12.7/gffread -M -K -T \
+	-d data/braker_analysis/TSEBRA/duplication_info.txt \
+	data/braker_analysis/TSEBRA/tsebra.gtf > \
+	data/braker_analysis/TSEBRA/tsebra_dedup.gtf
+```
+
+
+After the finalisation of the genome prediction using TSEBRA and the deduplication using gffread the generated gtf file is sorted and gene names are unified. Sort the file and add the locus as gene id:
+
+```{r}
+# read in the annotation
+tsebra.gtf <- read.gtf("data/braker_analysis/TSEBRA/tsebra_dedup.gtf")
+
+# create a mapping from locus the gene id, the locus is only found in rows of the "transcript" type
+transcript_locus_mapping <- tsebra.gtf %>%
+  filter(type == "transcript")
+transcript_locus_mapping$locus <- unlist(lapply(transcript_locus_mapping$attributes, extract_attributes, "locus"))
+transcript_locus_mapping <- transcript_locus_mapping %>%
+  select(transcript_id, locus)
+
+# join locus information into the tsebra dataframe
+tsebra.gtf <- left_join(tsebra.gtf, transcript_locus_mapping)
+
+# save information as RDS
+output <- tsebra.gtf %>%
+  select(source, gene_id, transcript_id, locus)
+saveRDS(output, "data/reannotation_correction/computational/locus.RDS")
+
+
+# create a dataframe indicating the order of the scaffolds and contigs
+names <- sort(unique(tsebra.gtf$chr))
+
+# sort names correctly and add number indicating the order
+names <- names[order(nchar(names), names)]
+order <- 1:(length(names))
+
+# join the created dataframe with the gtf dataframe for sorting
+order.df <- data.frame(names, order)
+tsebra.gtf <- left_join(tsebra.gtf, order.df, by= c("chr" = "names"))
+tsebra.gtf$order2 <- 1:nrow(tsebra.gtf)
+
+# group by gene id and then sort, first by chromosome using the order dataframe, then by start position
+# also keep together all gene transcript ids by sorting by the previous order
+tsebra.gtf.sorted <- tsebra.gtf %>%
+  group_by(transcript_id) %>%
+  arrange(order, order2)
+
+# use only one record per transcript, sort by locus and add number with the number of transcript at that locus
+# to later create the transcript names
+transcript_id <- tsebra.gtf.sorted %>% 
+  filter(type == "transcript") %>% 
+  group_by(locus) %>% 
+  mutate(occ = 1:n()) %>%
+  ungroup() %>%
+  select(transcript_id, occ)
+tsebra.gtf.sorted <- left_join(tsebra.gtf.sorted, transcript_id, by=c("transcript_id" = "transcript_id"))
+
+
+
+# write temporary RDS file:
+saveRDS(tsebra.gtf.sorted, 
+          "data/reannotation_correction/computational/tsebra_temp3.RDS")
+```
+
+Rename the transcripts and save again as a renamed gtf file:
+
+```{r}
+# read in RDS file
+tsebra.gtf.sorted <- readRDS("data/reannotation_correction/computational/tsebra_temp3.RDS")
+
+# rename the locus and transcript ID records to match
+# add column indicating the gene order
+ids <- unique(tsebra.gtf.sorted$locus)
+# create vector of gene order
+order3 <- 1:length(ids)
+# fill up the order so that every number includes 6 figures
+order_filled <- c()
+for (i in 1:length(order3)){
+  order_filled[i] <- paste(c(rep(0,6-nchar(order3[i])), order3[i]), sep="", collapse="")
+}
+# add characters to the beginning of the number to create the gene identifier
+gene_identifier <- paste("AHp", order_filled, sep="")
+
+# add the new gene identifier to the tsebra dataframe
+gene.id.df <- data.frame(ids, order3, order_filled, gene_identifier)
+tsebra.gtf.sorted <- left_join(tsebra.gtf.sorted, gene.id.df, by = c("locus" = "ids"))
+
+# create the transcript identifier based on gene identifier 
+tsebra.gtf.sorted <- tsebra.gtf.sorted %>%
+  mutate(transcript_identifier = paste0(gene_identifier, ".", occ))
+
+# include new attribute column
+tsebra.gtf.sorted$new_attributes <- paste0("gene_id \"", 
+                                            tsebra.gtf.sorted$gene_identifier, 
+                                            "\"; transcript_id \"", 
+                                            tsebra.gtf.sorted$transcript_identifier, 
+                                            "\";")
+# create mapping file of old and new names:
+mapping <- tsebra.gtf.sorted %>% select(gene_id, transcript_id, locus, gene_identifier, transcript_identifier)
+saveRDS(mapping, "data/reannotation_correction/computational/mapping.RDS")
+
+# create final gtf file in the correct column order:
+output <- tsebra.gtf.sorted %>%
+  ungroup() %>%
+  select(chr, source, type, start, end, score, strand, phase, new_attributes)
+
+# write gtf
+write.table(output[,1:9], 
+          "data/reannotation_correction/computational/tsebra_renamed.gtf",
+          col.names = F, row.names = F, quote=F, sep ="\t")
+```
+
+Based on evidence from sequencing data, the sequence of the AmMYBl1 gene (AHp014591) was manually adjusted. The resulting file was saved as data/reannotation_correction/manual/Ahypochondriacus_2.2_polished_corrected.gtf. Gffread was used to extract cds and protein fasta files of the annotated genes and convert the gtf file to the gff3 format, representing the genome annotation v2.2.
+
+More manual adjustment is required. First, the phase field in the annotation file is incorrect (likely an issue with TSEBRA). Secondly, seemingly a bug in TSEBRA causes the annotated sequence to be changed in the case that the stop codon is split up by an intron. I will save the annotation with the manually corrected AmMYBl1 as a gtf file under a different name and fix the phasing issue. The new manually corrected input file is data/reannotation_correction/manual/manually_MYBl1_corrected.gtf.
+
+As a first step, the genes with wrong values in their last exons are manually adjusted. This is the list of identifiers with an incorrect last exon, the genes were corrected based on their annotated cpc2 cds predictions.
+ERROR: Proteins do not match for transcript AHp001894.1	Strand:+	Exons: 2 checked, corrected
+ERROR: Proteins do not match for transcript AHp012461.3	Strand:+	Exons: 8 checked, corrected
+ERROR: Proteins do not match for transcript AHp002432.2	Strand:+	Exons: 9 checked, corrected
+ERROR: Proteins do not match for transcript AHp016935.2	Strand:+	Exons: 5 checked, corrected
+ERROR: Proteins do not match for transcript AHp002702.1	Strand:-	Exons: 15 checked, corrected
+ERROR: Proteins do not match for transcript AHp001365.4	Strand:+	Exons: 11 checked, corrected
+ERROR: Proteins do not match for transcript AHp001365.3	Strand:+	Exons: 12 checked, corrected
+ERROR: Proteins do not match for transcript AHp011962.1	Strand:-	Exons: 16 checked, corrected
+ERROR: Proteins do not match for transcript AHp011962.2	Strand:-	Exons: 17 checked, corrected
+ERROR: Proteins do not match for transcript AHp013889.1	Strand:-	Exons: 4 checked, corrected
+ERROR: Proteins do not match for transcript AHp008007.4	Strand:+	Exons: 6 checked, corrected
+ERROR: Proteins do not match for transcript AHp008007.3	Strand:+	Exons: 6 checked, corrected
+ERROR: Proteins do not match for transcript AHp020302.2	Strand:-	Exons: 2 checked, corrected
+ERROR: Proteins do not match for transcript AHp022997.1	Strand:-	Exons: 8 checked, corrected
+ERROR: Proteins do not match for transcript AHp015536.2	Strand:+	Exons: 28 checked, corrected
+ERROR: Proteins do not match for transcript AHp003461.2	Strand:-	Exons: 14 checked, corrected
+ERROR: Proteins do not match for transcript AHp004263.2	Strand:+	Exons: 5 checked, corrected
+ERROR: Proteins do not match for transcript AHp017585.1	Strand:-	Exons: 2 checked, corrected
+ERROR: Proteins do not match for transcript AHp016151.2	Strand:-	Exons: 4 checked, corrected
+ERROR: Proteins do not match for transcript AHp015188.1	Strand:+	Exons: 6 checked, corrected
+
+furthermore, I found 10 additional genes for which the the cds was not a multiple of 3, those genes had similar issues compared to the others:
+names(annotation.cds.fasta[which((width(annotation.cds.fasta) %% 3) != 0)])
+ [1] "AHp003199.2" "AHp007694.1" "AHp008244.1" "AHp011701.3" "AHp012360.1" "AHp013978.2" "AHp013978.3" "AHp013978.4" "AHp014078.1" "AHp023614.1"
+
+
+```{r}
+annotation.gtf <- read.gtf("data/reannotation_correction/manual/manually_MYBl1_corrected.gtf")
+# searched the above list in command line using grep -n to identify the lines which need to be corrected
+annotation.gtf[14134,4] <- 31584484
+annotation.gtf[93858,4] <- 340181
+annotation.gtf[18171,4] <- 37391386
+annotation.gtf[127438,4] <- 10148031
+annotation.gtf[20207,5] <- 2036532 # minus strand
+annotation.gtf[10269,4] <- 24730250
+annotation.gtf[10257,4] <- 24730250
+annotation.gtf[90180,5] <- 18259575 # minus strand
+annotation.gtf[90197,5] <- 18259575 # minus strand
+annotation.gtf[104739,5] <- 21390275 # minus strand
+annotation.gtf[60607,4] <- 25416738
+annotation.gtf[60600,4] <- 25416631
+annotation.gtf[153532,5] <- 18012458 # minus strand, only adjust position by 1
+annotation.gtf[173743,5] <- 3280465 # minus strand
+annotation.gtf[116728,4] <- 6429565
+annotation.gtf[25743,5] <- 15898919 # minus strand
+annotation.gtf[31372,4] <- 31118543
+annotation.gtf[132945,5] <- 18214148 # minus strand
+annotation.gtf[121835,5] <- 17488847 # minus strand
+annotation.gtf[114530,4] <- 21203168
+## additional genes:
+annotation.gtf[23976,5] <- 7441696 # minus strand, only adjust by 1
+annotation.gtf[57807,4] <- 21820533 # only adjust by 1
+annotation.gtf[62477,4] <- 27688979 # only adjust by 1
+annotation.gtf[88092,4] <- 13431774 # only adjust by 1
+annotation.gtf[93145,5] <- 23666180 # minus strand, only adjust by 1
+annotation.gtf[105257,5] <- 693429 # minus strand, only adjust by 1
+annotation.gtf[105269,5] <- 693429 # minus strand, only adjust by 1
+annotation.gtf[105281,5] <- 693429 # minus strand, only adjust by 1
+annotation.gtf[105888,5] <- 3528579 # minus strand, only adjust by 1
+annotation.gtf[178221,5] <- 807 # minus strand, only adjust by 1
+
+
+# write corrected table
+write.table(annotation.gtf[,1:9], 
+          "data/reannotation_correction/manual/manually_genes_corrected.gtf",
+          col.names = F, row.names = F, quote=F, sep ="\t")
+```
+
+After manual correction of genes, fix the phase attribute.
+
+```{bash}
+# Add a gene line and convert to gff for gffvalidator. Correct the phasing field using gffvalidator.
+/home/tom/Documents/tools/gffread-0.12.7/gffread -E data/reannotation_correction/manual/manually_genes_corrected.gtf --keep-genes > data/reannotation_correction/manual/manually_genes_corrected.gene.gff
+
+# the genes with wrong coordinates should be fixed at this step, so that they can be assigned the correct phasing attribute
+gt gff3 -tidy -force -retainids -addids no -o data/reannotation_correction/manual/manually_genes_corrected.gene.phase.gff data/reannotation_correction/manual/manually_genes_corrected.gene.gff
+
+# remove empty lines from the gtf file, with only "###"
+grep -v "###" data/reannotation_correction/manual/manually_genes_corrected.gene.phase.gff > data/reannotation_correction/manual/Ahypochondriacus_2.2_polished_corrected.gff
+```
+
+Convert to other formats using gffread.
+
+```{bash}
+# convert to gtf format
+/home/tom/Documents/tools/gffread-0.12.7/gffread -v -T --keep-genes data/reannotation_correction/manual/Ahypochondriacus_2.2_polished_corrected.gff > data/reannotation_correction/manual/Ahypochondriacus_2.2_polished_corrected.gtf
+
+# extract prot (-y) and cds (-x) fasta files
+/home/tom/Documents/tools/gffread-0.12.7/gffread -x data/reannotation_correction/manual/Ahypochondriacus_2.2_polished_corrected.cds.fasta \
+	-y data/reannotation_correction/manual/Ahypochondriacus_2.2_polished_corrected.prot.fasta \
+	-g polished_genome_annotation/assembly/Ahypochondriacus_2.2_polished.softmasked.fasta \
+	data/reannotation_correction/manual/Ahypochondriacus_2.2_polished_corrected.gtf
+	
+# convert to gff3 format
+#/home/tom/Documents/tools/gffread-0.12.7/gffread data/reannotation_correction/manual/Ahypochondriacus_2.2_polished_corrected.gtf > \
+#	data/reannotation_correction/manual/Ahypochondriacus_2.2_polished_corrected.gff
+	
+# copy to the annotation directory:
+cp data/reannotation_correction/manual/A* polished_genome_annotation/annotation/
+```
+
+Perform quality control of the annotated genes:
+
+```{r}
+# load in cds fasta
+annotation.cds.fasta <- readBStringSet(filepath = "data/reannotation_correction/manual/Ahypochondriacus_2.2_polished_corrected.cds.fasta")
+
+# are there genes with length != a multiple of 3?
+which((width(annotation.cds.fasta) %% 3) != 0)
+
+# do all genes start with start codon and end with a stop codon?
+# create table of uppercase letters using the last three annotated bases of each fasta entry
+# display only the three stop codons, TAA, TAG and TGA
+table(toupper(subseq(annotation.cds.fasta, start = width(annotation.cds.fasta)-2, end = width(annotation.cds.fasta))))
+# create table of uppercase letters using the first three annotated bases of each fasta entry
+table(toupper(subseq(annotation.cds.fasta, start=1, end=3)))
+# all coding sequences are a multiple of 3, start with a start codon and end with a stop codon
+```
+
+
+Compare annotation completeness of genome annotation v2.2 with previously published A. hypochondriacus genome annotation and A. cruentus annotation using BUSCO.
+
+```{bash}
+# genome annotation v2.2
+# compare against the orthoDBv10 Embryophyta dataset, using 7 threads
+busco -m protein \
+  -i polished_genome_annotation/annotation/Ahypochondriacus_2.2_polished_corrected.prot.fasta \
+  -o genome_annotation_v2.2 \
+  -l embryophyta_odb10 \
+  --out_path data/annotation_analysis/busco/ \
+  --download_path data/annotation_analysis/busco/datasets/ \
+  -c 6
+  
+# genome annotation v2.1
+busco -m protein \
+  -i /home/tom/Documents/reference_genomes/Ahypochondriacus/annotation/Ahypochondriacus_459_v2.1.protein.fa \
+  -o genome_annotation_v2.1 \
+  -l embryophyta_odb10 \
+  --out_path data/annotation_analysis/busco/ \
+  --download_path data/annotation_analysis/busco/datasets/ \
+  -c 6
+  
+# A. cruentus annotation
+busco -m protein \
+  -i /home/tom/Documents/reference_genomes/Acruentus/annotation/Amacr_pep_20210312.tfa \
+  -o Acruentus_annotation \
+  -l embryophyta_odb10 \
+  --out_path data/annotation_analysis/busco/ \
+  --download_path data/annotation_analysis/busco/datasets/ \
+  -c 6
+```
+
+

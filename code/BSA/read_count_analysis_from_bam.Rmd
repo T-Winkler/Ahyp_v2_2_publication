@@ -1,0 +1,208 @@
+---
+title: "BSA_read_variant_plotting"
+author: "twinkle1"
+date: "2023-01-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(chromstaR)
+library(ggtranscript)
+library(RColorBrewer)
+knitr::opts_knit$set(root.dir = "/home/tom/Documents/projects/Ahyp_v2_2/")
+```
+
+Extract the sequencing reads from the bam files which overlap both the two non-synonymous SNPs and the stop-gained SNP. Samtools view can be used to extract reads covering a particular position (and their pairs). Non-primary alignments can be discarded. Reads should cover the position of the stop-gained variant (Scaffold 16, 5305851, C->T) and the position of the right non-synonymous variant (Scaffold 16, 5305727, A->T).
+
+```{bash}
+mkdir -p data/BSA/RNAseq/phased_reads/
+
+# green flower
+# index and extract everything overlapping the right non-synonymous variant position
+samtools index data/BSA/RNAseq/STAR_flower_mappings/AM_00332_gf_Aligned.sortedByCoord.out.bam
+samtools view -b -h -F 256 -P data/BSA/RNAseq/STAR_flower_mappings/AM_00332_gf_Aligned.sortedByCoord.out.bam Scaffold_16:5305727-5305727 > data/BSA/RNAseq/phased_reads/AM_00332_gf_Aligned.sortedByCoord.out.covering_mismatch.bam
+
+# index and extract everything overlapping the stop-gained variant position
+samtools index data/BSA/RNAseq/phased_reads/AM_00332_gf_Aligned.sortedByCoord.out.covering_mismatch.bam
+samtools view -b -h -P data/BSA/RNAseq/phased_reads/AM_00332_gf_Aligned.sortedByCoord.out.covering_mismatch.bam Scaffold_16:5305851-5305851 > data/BSA/RNAseq/phased_reads/AM_00332_gf_Aligned.sortedByCoord.out.covering_both.bam
+samtools index data/BSA/RNAseq/phased_reads/AM_00332_gf_Aligned.sortedByCoord.out.covering_both.bam
+
+# save as tsv file using sam2tsv from jvarkit
+java -jar /home/tom/Documents/tools/jvarkit/dist/sam2tsv.jar -R polished_genome_annotation/assembly/Ahypochondriacus_2.2_polished.softmasked.fasta data/BSA/RNAseq/phased_reads/AM_00332_gf_Aligned.sortedByCoord.out.covering_both.bam > data/BSA/RNAseq/phased_reads/AM_00332_gf_Aligned.sortedByCoord.out.covering_both.bam.tsv
+
+
+# red flower
+# index and extract everything overlapping the right non-synonymous variant position
+samtools index data/BSA/RNAseq/STAR_flower_mappings/AM_00332_rf_Aligned.sortedByCoord.out.bam
+samtools view -b -h -F 256 -P data/BSA/RNAseq/STAR_flower_mappings/AM_00332_rf_Aligned.sortedByCoord.out.bam Scaffold_16:5305727-5305727 > data/BSA/RNAseq/phased_reads/AM_00332_rf_Aligned.sortedByCoord.out.covering_mismatch.bam
+
+# index and extract everything overlapping the stop-gained variant position
+samtools index data/BSA/RNAseq/phased_reads/AM_00332_rf_Aligned.sortedByCoord.out.covering_mismatch.bam
+samtools view -b -h -P data/BSA/RNAseq/phased_reads/AM_00332_rf_Aligned.sortedByCoord.out.covering_mismatch.bam Scaffold_16:5305851-5305851 > data/BSA/RNAseq/phased_reads/AM_00332_rf_Aligned.sortedByCoord.out.covering_both.bam
+samtools index data/BSA/RNAseq/phased_reads/AM_00332_rf_Aligned.sortedByCoord.out.covering_both.bam
+
+# save as tsv file using sam2tsv from jvarkit
+java -jar /home/tom/Documents/tools/jvarkit/dist/sam2tsv.jar -R polished_genome_annotation/assembly/Ahypochondriacus_2.2_polished.softmasked.fasta data/BSA/RNAseq/phased_reads/AM_00332_rf_Aligned.sortedByCoord.out.covering_both.bam > data/BSA/RNAseq/phased_reads/AM_00332_rf_Aligned.sortedByCoord.out.covering_both.bam.tsv
+```
+
+Put in loading and filtering of the data (tsv and sequencing data) into separate functions:
+
+```{r}
+# function to load in bam tsv and filter reads covering at least the stop position and other snp
+# basecall has to exist at these positions, gap is not sufficient
+read_bam.tsv <- function(filename){
+  # read in data
+  bam.tsv <- as.data.frame(read_tsv(file = filename))
+  colnames(bam.tsv) <- c("read_name", "Flag", "MAPQ", "CHROM", "read_pos", "read_base", "read_qual", "ref_pos",
+                       "ref_base", "CIGAR_op")
+  # limit the analysis to the region of interest
+  # snps of interest are at the positions 5305722, 5305727 and 5305851
+  snp.tsv <- bam.tsv %>%
+    filter(CHROM == "Scaffold_16",
+           ref_pos == 5305722 | ref_pos == 5305727 | ref_pos == 5305851,
+           read_base != ".") %>%
+    mutate(snp_group = if_else(ref_pos == 5305851, 1, 0))
+  # check that there are at least 2 snps and the stop snp is included
+  snp.tsv <- snp.tsv %>%
+    group_by(read_name) %>% # group by read name
+    filter(any(snp_group == 1),
+           n_distinct(read_pos) > 1) %>% # at least 2 snps and at least the stop snp covered
+    arrange(read_name) %>%
+    ungroup() %>%
+    #mutate(allele = ifelse(tolower(read_base) == ref_base, "ref", "alt")) %>% # is it the reference or alternative allele?
+    mutate(allele = ifelse(ref_pos == 5305722 & read_base == "A", 
+                           "alt", 
+                           ifelse(ref_pos == 5305727 & read_base == "T", 
+                                  "alt",
+                                  ifelse(ref_pos == 5305851 & read_base == "T",
+                                         "alt", "ref"))))
+  return(snp.tsv)
+}
+
+# function to load in bam file as granges object to extract read positions
+read_bam_snps_as_df <- function(filename, tsv){
+  # read in data:
+  snp.bam <- readBamFileAsGRanges(bamfile = filename,
+                                min.mapq = 0,
+                                what = "qname")
+  # convert to dataframe:
+  snp.bam.df <- as.data.frame(snp.bam@ranges)
+  snp.bam.df$qname <- snp.bam@elementMetadata@listData$qname
+  snp.bam.df <- snp.bam.df %>%
+    mutate(start = start-1,
+           end = end-1)
+  # filter only the reads kept in the tsv table
+  snp.bam.df <- snp.bam.df %>%
+    filter(qname %in% tsv$read_name)
+}
+
+
+# plot individual reads after loading in data:
+plot_reads <- function(df, tsv, title){
+  # maybe rather join the two tables?
+  number_alt_alleles <- tsv %>%
+    filter(allele == "alt") %>%
+    group_by(read_name) %>% 
+    summarise(n = n(),
+              snp_grouped = sum(snp_group))
+  # join the table detailing the number of alt alleles
+  snp.bam.df <- left_join(df, number_alt_alleles, by = c("qname" = "read_name"))
+  
+  # first plot, showing specific reads
+  snpplot <- ggplot() +
+    geom_range(data = snp.bam.df, 
+               aes(xstart = start, xend = end, y = factor(qname, levels=unique(qname[order(n,snp_grouped,qname)]), ordered=TRUE)))
+  
+  # second plot showing alternativ allele positions
+  snpplot2 <- snpplot +
+    geom_point(data = tsv %>% filter(allele == "alt"), 
+               aes(x = ref_pos, 
+                   y = read_name, 
+                   color = as.factor(snp_group)),
+               size = 2.2) +
+    theme_classic() +
+    scale_color_manual(values = viridis::viridis(n = 4, direction = -1)[3:4]) +
+    labs(#title = title,
+         x = "Position Scaffold 16 (bp)",
+         y = "Read pair",
+         color = "Allele") +
+    #coord_cartesian(xlim = c(5305600, 5305950)) +
+    theme(axis.text.y = element_blank(),
+          legend.position = "none",
+          #text = element_text(size = 21),
+          axis.text.x = element_text(size=25),
+          axis.title.x = element_text(size=40),
+          axis.line = element_line(linewidth = 2),
+          axis.ticks = element_line(linewidth = 1.5),
+          axis.ticks.length = unit(.25, "cm"),
+          axis.title.y = element_blank(),
+          axis.line.y = element_blank(),
+          axis.ticks.y = element_blank())
+  return(snpplot2)
+}
+
+```
+
+Load in data for the red and green flower bulks of the BSA on AM_00332:
+
+```{r}
+# green flower
+snp_tsv.gf <- read_bam.tsv(filename = "data/BSA/RNAseq/phased_reads/AM_00332_gf_Aligned.sortedByCoord.out.covering_both.bam.tsv")
+
+snp_df.gf <- read_bam_snps_as_df(filename = "data/BSA/RNAseq/phased_reads/AM_00332_gf_Aligned.sortedByCoord.out.covering_both.bam",
+                                 tsv = snp_tsv.gf)
+
+# how many reads after filtering?
+snp_tsv.gf %>%
+  dplyr::count(read_name) # 99 reads
+
+# red flower
+snp_tsv.rf <- read_bam.tsv(filename = "data/BSA/RNAseq/phased_reads/AM_00332_rf_Aligned.sortedByCoord.out.covering_both.bam.tsv")
+
+snp_df.rf <- read_bam_snps_as_df(filename = "data/BSA/RNAseq/phased_reads/AM_00332_rf_Aligned.sortedByCoord.out.covering_both.bam",
+                                 tsv = snp_tsv.rf)
+
+# how many reads after filtering?
+snp_tsv.rf %>%
+  dplyr::count(read_name) # 38 reads
+```
+
+Plot individual reads and alternative variants:
+
+```{r}
+# green flower
+plot.gf <- plot_reads(df = snp_df.gf,
+                      tsv = snp_tsv.gf,
+                      title = "RNAseq reads green flower")
+plot.gf
+
+# save plot
+ggsave(filename = "plots/rna_seq_reads_gf.png",
+       plot = plot.gf,
+       width = 10,
+       height = 8)
+
+
+# red flower
+plot.rf <- plot_reads(df = snp_df.rf,
+                      tsv = snp_tsv.rf,
+                      title = "RNAseq reads red flower")
+plot.rf
+
+# save plot
+ggsave(filename = "plots/rna_seq_reads_rf.png",
+       plot = plot.rf,
+       width = 10,
+       height = 8)
+```
+
+
+
+
+
+
+
+
+

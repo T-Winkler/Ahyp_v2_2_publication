@@ -1,0 +1,153 @@
+---
+title: "Circos_plot"
+author: "twinkle1"
+date: '2022-08-25'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(circlize)
+library(data.table)
+library(GenomicRanges)
+knitr::opts_knit$set(root.dir = "/home/tom/Documents/projects/Ahyp_v2_2_publication/")
+```
+
+
+## Setup
+
+```{r}
+read.gtf <- function(file){
+  # based on: https://www.biostars.org/p/272889/
+  # read in the gtf file:
+  gff <- fread(file)
+  setnames(gff, names(gff), c("chr","source","type","start","end","score","strand","phase","attributes"))
+  # subset attribute column into the gene and transcript id columns
+  # function for extracting the two attributes
+  extract_attributes <- function(gtf_column, att_of_interest){
+    att <- strsplit(gtf_column, "; ")
+    att <- gsub("\"","",unlist(att))
+    att <- gsub(";","",unlist(att))
+    if(!is.null(unlist(strsplit(att[grep(att_of_interest, att)], " ")))){
+      return( unlist(strsplit(att[grep(att_of_interest, att)], " "))[2])
+    }else{
+      return(NA)
+    }
+  }
+  # using the function to subset gene and transcript id:
+  gff$gene_id <- unlist(lapply(gff$attributes, extract_attributes, "gene"))
+  gff$transcript_id <- unlist(lapply(gff$attributes, extract_attributes, "transcript"))
+  return(gff)
+}
+
+# Create function for converting gtf dataframe to genomic ranges onbject
+Granges_from_gtf <- function(gtf){
+  # requires the GRanges and tidyverse packages
+  gene_structures <- gtf %>%
+  group_by(transcript_id) %>% # group by transcript id
+  summarise(gene_start = min(start),
+            gene_end = max(end),
+            seqnames = unique(chr), # all sequences should be on the same chromosome
+            gene_strand = unique(strand))
+  # use the gene_structures object to create the genomic ranges object
+  gene_ranges <- GRanges(seqnames = gene_structures$seqnames, 
+                         ranges = IRanges(start=gene_structures$gene_start, 
+                                          end=gene_structures$gene_end,
+                                          names = gene_structures$transcript_id), 
+                         strand = gene_structures$gene_strand)
+  return(gene_ranges)
+}
+```
+
+
+
+## Circos plot
+
+Load in data and perform necessary transformations.
+
+```{r}
+# for the circlize package, bed-like dataframes are required
+# load in the indexed genome and create a bed-like format from the genome
+genome.bed <- read.table("polished_genome_annotation/assembly/Ahypochondriacus_2.2_polished.softmasked.fasta.fai")
+genome.bed <- genome.bed %>%
+  head(16) %>%
+  summarize(chr = V1,
+            start = 1,
+            end = V2)
+# define chromosome order:
+order <- as.numeric(gsub(".*_", "", genome.bed$chr))
+genome.bed$chr <- as.factor(genome.bed$chr)
+# reorder based on on order vector
+genome.bed$chr <- reorder(genome.bed$chr, order)
+
+# load in genome annotation
+gene_annotation <- read.gtf("polished_genome_annotation/annotation/Ahypochondriacus_2.2_polished_corrected.gtf")
+gene_bed <- gene_annotation %>%
+  filter(type=="CDS") %>%
+  summarize(chr = chr,
+            start = start,
+            end = end)
+
+# load in repetitive element annotation
+rep_annotation <- read.table("data/repeatmasking/repeatmasker/Ahypochondriacus_2.2_polished.capital.fasta.out.gff")
+rep_bed <- rep_annotation %>%
+  summarize(chr = V1,
+            start = V4,
+            end = V5)
+
+# prepare MYB transcription factor and color pathway gene annotation in genome
+#myb_genes <- read.csv("data/manual_sheets/MYB_with_subgroups.csv")
+#myb_annotation <- gene_annotation %>%
+#  filter(transcript_id %in% myb_genes$query_name,
+#         type == "transcript") %>%
+#  group_by(gene_id) %>%
+#  summarise(chr = chr,
+#            start = min(start),
+#            end = max(end)) %>%
+#  unique()
+
+
+# prepare plot:
+# color scheme for chromosomes:
+genome.bed$clr <- colorRampPalette(c("#FFFFFF", "#71196E"))(16)
+
+png(filename = "plots/circos.png", width = 4800, height = 4800, res = 1200) # changed this line
+circos.clear()
+circos.par("start.degree" = 90)
+circos.genomicInitialize(data=genome.bed, 
+                         tickLabelsStartFromZero = F, 
+                         axis.labels.cex = 0.3,
+                         labels.cex = 0.5)
+
+# this track adds grey outlines of the chromosomes
+# keep it commented out, since it does not add information to the figure
+#circos.track(ylim = c(0, 1), panel.fun = function(x, y) {
+#    chr = CELL_META$sector.index
+#    xlim = CELL_META$xlim
+#    ylim = CELL_META$ylim
+#    circos.rect(xlim[1], 0, xlim[2], 1, col = "lightgrey")
+#}, track.height = 0.10, bg.border = NA)
+
+# gene density
+circos.genomicDensity(gene_bed, 
+                      track.height=0.15,
+                      window.size = 1000000,
+                      col="dodgerblue3")
+
+# repetitive element density
+circos.genomicDensity(rep_bed,
+                      track.height=0.15,
+                      window.size = 1000000,
+                      col="forestgreen")
+
+
+dev.off()
+
+
+#circos.initialize(sectors = genome.bed$chr, sector.width = genome.bed$end, x=genome.bed$end)
+
+
+```
+
+
+

@@ -1,0 +1,265 @@
+---
+title: "read_mapping_bias_analysis"
+author: "twinkle1"
+date: "2023-02-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table)
+library(pafr)
+library(GenomicRanges)
+knitr::opts_knit$set(root.dir = "/home/tom/Documents/projects/Ahyp_v2_2_publication/")
+```
+
+Analyse the observed bias in read mapping observed in ATAC and WG sequencing. A large number of reads map to regions on Scaffold 10. Visulaize the bias in read mapping by plotting Scaffold 10:
+
+```{r}
+# read in data
+coverage <- read.table(file = "data/mapping_bias_inference/genome_coverage/SRR2106212.sorted.dedup.10.depth")
+
+# calculate coverage in windows with fixed window size
+windowsize <- 5000
+
+# add window assignment
+coverage <- coverage %>%
+  mutate(window = ceiling(V2/windowsize))
+
+# calculate coverage in windows
+window_coverage <- coverage %>%
+  group_by(window) %>%
+  summarise(total_cov = sum(V3)) %>%
+  mutate(start = ((window-1)*windowsize),
+         end = start+windowsize)
+
+# plot coverage across Scaffold 10 in windows of 50 kb
+ggplot(data = window_coverage) +
+  geom_rect(aes(xmin = start,
+                xmax = end,
+                ymin = 0,
+                ymax = total_cov)) +
+  theme_bw() +
+  labs(y = "Total read depth in 50 kb window",
+       x = "Position Scaffold 10") +
+  theme(text = element_text(size = 22))
+
+# save plot
+ggsave(filename = "plots/mapping_bias_inference/50k_window_read_coverage.png",
+       width = 14, height = 8)
+```
+
+Investigate if genomic features correlate with the observed mapping bias. Calculate summary statistics including GC content using bedtools:
+
+```{bash}
+# create genome file for bedtools
+awk -F'\t' 'BEGIN {OFS = FS} {print $1,$2}' /projects/ag-stetter/reference_genomes/Ahypochondriacus/V2_2/Ahypochondriacus_2.2_polished.softmasked.fasta.fai > data/mapping_bias_inference/bedtools_genome.txt
+# make windows using bedtools, windowsize 5k, include only Scaffolds
+bedtools makewindows -g data/mapping_bias_inference/bedtools_genome.txt -w 5000 | grep "Scaffold" > data/mapping_bias_inference/all_genome_windows.bed
+# calculate statistics in windows
+bedtools nuc -fi /projects/ag-stetter/reference_genomes/Ahypochondriacus/V2_2/Ahypochondriacus_2.2_polished.softmasked.fasta -bed data/mapping_bias_inference/genome_windows.bed > data/mapping_bias_inference/window_stats.txt
+```
+
+
+Plot Scaffold 10, with read depth and plastid genome content
+
+```{r}
+# read in paf files from minimap2
+chloroplast.paf <- read_paf("data/mapping_bias_inference/plastid_to_genome/chloroplast_to_genome.paf")
+mito.paf <- read_paf("data/mapping_bias_inference/plastid_to_genome/mitochondrium_to_genome.paf")
+mito.df <- as.data.frame(mito.paf)
+chloro.df <- as.data.frame(chloroplast.paf)
+
+# read in mapping files for cruentus
+chloroplast.cruentus.paf <- read_paf("data/mapping_bias_inference/plastid_to_genome/chloroplast_to_genome_cruentus.paf")
+mito.cruentus.paf <- read_paf("data/mapping_bias_inference/plastid_to_genome/mitochondrium_to_genome_cruentus.paf")
+mito.cruentus.df <- as.data.frame(mito.cruentus.paf)
+chloro.cruentus.df <- as.data.frame(chloroplast.cruentus.paf)
+
+
+# mark GC outlier windows, and mapped mitochondrial and chloroplast genome sequences
+# only include alignments with mapq >= 0
+ggplot(data = window_coverage) +
+  geom_rect(aes(xmin = start,
+                xmax = end,
+                ymin = 0,
+                ymax = total_cov)) +
+  geom_rect(data = mito.df %>% filter(tname == "Scaffold_10",
+                                      mapq != 0),
+            aes(xmin = tstart,
+                xmax = tend,
+                ymin = -1000000,
+                ymax = -10000,
+                fill = "Mitochondrial")) +
+  geom_rect(data = chloro.df %>% filter(tname == "Scaffold_10",
+                                        mapq != 0),
+            aes(xmin = tstart,
+                xmax = tend,
+                ymin = -1200000,
+                ymax = -2200000,
+                fill = "Chloroplast")) +
+  coord_cartesian(xlim = c(5300000, 6500000)) +
+  #coord_cartesian(xlim = c(5835000,6390000)) +
+  theme_classic() +
+  labs(y = "Total read depth in 5 kb windows",
+       x = "Position on Scaffold 10",
+       fill = "Annotation") +
+  scale_fill_manual(values = c("red", "blue", "darkgreen"),
+                    breaks = c("5% GC content outlier","Mitochondrial","Chloroplast")) +
+  theme(text = element_text(size = 22))
+
+
+ggsave(filename = "plots/mapping_bias_inference/5kb_outlier_windows_zoom.png",
+       width = 10, height = 6, bg = "white")
+```
+
+How much of the plastid genomes can be found in the reference genome and where?
+
+```{r}
+# how much mitochondrium was mapped?
+mito.df %>%
+  filter(mapq != 0) %>%
+  group_by(tname) %>%
+  summarize(total_align_length = sum(alen)) %>%
+  mutate(percent_aligned = (total_align_length/mito.df$qlen[1])*100) %>%
+  arrange(desc(percent_aligned)) 
+
+# how much chloroplast was mapped?
+chloro.df %>%
+  filter(mapq != 0) %>%
+  group_by(tname) %>%
+  summarize(total_align_length = sum(alen)) %>%
+  mutate(percent_aligned = (total_align_length/chloro.df$qlen[1])*100) %>%
+  arrange(desc(percent_aligned))
+
+# how much mitochondrium was mapped to cruentus?
+mito.cruentus.df %>%
+  filter(mapq != 0) %>%
+  group_by(tname) %>%
+  summarize(total_align_length = sum(alen)) %>%
+  mutate(percent_aligned = (total_align_length/mito.df$qlen[1])*100) %>%
+  arrange(desc(percent_aligned))
+
+# how much chloroplast was mapped to cruentus?
+chloro.cruentus.df %>%
+  filter(mapq != 0) %>%
+  group_by(tname) %>%
+  summarize(total_align_length = sum(alen)) %>%
+  mutate(percent_aligned = (total_align_length/chloro.df$qlen[1])*100) %>%
+  arrange(desc(percent_aligned))
+
+
+# create genomic ranges object to check coverage in case query positions overlap
+# in some cases, a single query base can map to multiple target bases, exclude those from overall percentage of query mapped
+calculate_percent_covered <- function(paf_dataframe){
+  # exclude secondary alignments
+  paf_dataframe <- paf_dataframe %>%
+    filter(mapq != 0)
+  # create GRanges object
+  paf_granges <- GRanges(seqnames = "query",
+                   ranges = IRanges(start = paf_dataframe$qstart,
+                                    end = paf_dataframe$qend))
+  # sum all covered positions, no matter how often they mapped and divide by query length
+  paf_cov <- coverage(paf_granges)
+  above_zero <- paf_cov@listData$query@values > 0
+  return(sum(paf_cov@listData$query@lengths[above_zero]) / paf_dataframe[1,2])
+}
+
+```
+
+There are structural differences in GC content between the different genomes. While the Beta vulgaris mitochondrium has 43.86 % GC, the chloroplast genome has 36.61 % and the Scaffolds of the nuclear genome have GC content between 32.3 % and 33.2 %.
+
+```{bash}
+# GC content of different genomes
+seqkit fx2tab --name --gc data/mapping_bias_inference/plastid_to_genome/Ah_chloroplast.fasta
+seqkit fx2tab --name --gc data/mapping_bias_inference/plastid_to_genome/Bv_mitochondrium.fasta
+seqkit fx2tab --name --gc polished_genome_annotation/assembly/Ahypochondriacus_2.2_polished.softmasked.fasta | grep "Scaffold"
+```
+
+
+Extract a list of genes overlapping the mapped plastid genome positions to investigate enrichment of specific functions.
+
+```{r}
+# set up function for reading in a gtf file
+read.gtf <- function(file){
+  # based on: https://www.biostars.org/p/272889/
+  # read in the gtf file:
+  gff <- fread(file)
+  setnames(gff, names(gff), c("chr","source","type","start","end","score","strand","phase","attributes"))
+  # subset attribute column into the gene and transcript id columns
+  # function for extracting the two attributes
+  extract_attributes <- function(gtf_column, att_of_interest){
+    att <- strsplit(gtf_column, "; ")
+    att <- gsub("\"","",unlist(att))
+    att <- gsub(";","",unlist(att))
+    if(!is.null(unlist(strsplit(att[grep(att_of_interest, att)], " ")))){
+      return( unlist(strsplit(att[grep(att_of_interest, att)], " "))[2])
+    }else{
+      return(NA)
+    }
+  }
+  # using the function to subset gene and transcript id:
+  gff$gene_id <- unlist(lapply(gff$attributes, extract_attributes, "gene"))
+  gff$transcript_id <- unlist(lapply(gff$attributes, extract_attributes, "transcript"))
+  return(gff)
+}
+
+# gene functions of plastid genomic regions
+annotation <- read.gtf("polished_genome_annotation/annotation/Ahypochondriacus_2.2_polished_corrected.gtf")
+annotation <- annotation %>%
+  filter(type == "transcript")
+
+# convert both annotation and mapped regions to genomic ranges
+annotation_ranges <- GRanges(seqnames = annotation$chr,
+                             ranges = IRanges(start = annotation$start,
+                                              end = annotation$end,
+                                              names = annotation$transcript_id),
+                             strand = annotation$strand)
+
+# mitochondrial regions
+# filter for primary alignments only
+mito.df <- mito.df %>%
+  filter(mapq != 0,
+         tname == "Scaffold_10")
+mito_ranges <- GRanges(seqnames = mito.df$tname,
+                       ranges = IRanges(start = mito.df$tstart,
+                                        end = mito.df$tend))
+
+mito_overlap <- findOverlaps(annotation_ranges, mito_ranges)
+mito_overlap <- annotation[mito_overlap@from,11]
+
+# chloroplast regions
+# filter for primary alignments only
+chloro.df <- chloro.df %>%
+  filter(mapq != 0,
+         tname == "Scaffold_10")
+chloro_ranges <- GRanges(seqnames = chloro.df$tname,
+                         ranges = IRanges(start = chloro.df$tstart,
+                                          end = chloro.df$tend))
+
+chloro_overlap <- findOverlaps(annotation_ranges, chloro_ranges)
+chloro_overlap <- annotation[chloro_overlap@from,11]
+```
+
+
+Compare with functional annotation:
+
+```{r}
+# load functional annotation
+functional_annotation <- readxl::read_xlsx(path = "data/functional_annotation/eggnog_mapper/MM_8wexw920.emapper.annotations.xlsx")
+colnames(functional_annotation) <- functional_annotation[2,]
+functional_annotation <- functional_annotation[-(1:2),]
+
+# check function annotation for overlaps
+mito_functions <- functional_annotation %>%
+  filter(query %in% mito_overlap$transcript_id)
+
+chloro_functions <- functional_annotation %>%
+  filter(query %in% chloro_overlap$transcript_id)
+```
+
+
+
+
+

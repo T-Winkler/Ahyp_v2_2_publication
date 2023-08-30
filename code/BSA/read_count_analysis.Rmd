@@ -1,0 +1,232 @@
+---
+title: "betalain_gene_expression_flower_bulk"
+author: "twinkle1"
+date: '2022-10-07'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(DESeq2)
+library(factoextra)
+library(patchwork)
+knitr::opts_knit$set(root.dir = "/home/tom/Documents/projects/Ahyp_v2_2_publication/")
+```
+
+
+```{r}
+########################## Create a function to generate plots for all betalain pathway genes
+# load object with names of all betalain and flavonoid genes
+pathway_genes <- read.csv(file = "data/manual_sheets/color_pathway_genes.csv", header=T)
+colnames(pathway_genes) <- c("pathway_gene", "pathway", "gene_id")
+betalain.genes <- pathway_genes %>%
+  filter(pathway == "Betalain")
+
+```
+
+
+Transcript level gene expression quantification from kallisto:
+
+```{r}
+# vector of input directories
+sample_names <- dir(path = "data/flower_color_mapping/kallisto_quant/")
+
+# read in tables
+kallisto_quant <- c()
+
+for (i in 1:length(sample_names)){
+  x <- read_table(file = paste0("data/flower_color_mapping/kallisto_quant/",
+                                sample_names[i],
+                                "/abundance.tsv"))
+  # set column names and keep relevant columns
+  x <- x %>%
+    summarise(transcript_id = target_id,
+              tpm = tpm,
+              bulk = sample_names[i])
+  # save in kallisto_quant
+  kallisto_quant <- rbind(kallisto_quant, x)
+}
+kallisto_quant$bulk <- as.factor(kallisto_quant$bulk)
+
+# quick quality control, that each bulk has the correct number of transcripts
+kallisto_quant %>%
+  group_by(bulk) %>%
+  tally()
+
+# add gene id column to table
+kallisto_quant <- kallisto_quant %>%
+  mutate(gene_id = substr(transcript_id, 1, 9))
+
+# check gene expression only for betalain pathway genes
+betalain_quant <- kallisto_quant %>%
+  filter(gene_id %in% betalain.genes$gene_id)
+
+# add betalain_gene information
+betalain_quant <- left_join(betalain_quant, betalain.genes, by = "gene_id")
+
+# which genes are not expressed? Expression under 0.5 TPM in all samples
+betalain_quant %>%
+  group_by(transcript_id) %>%
+  summarise(pathway_gene = pathway_gene,
+            max_tpm = max(tpm)) %>%
+  unique() %>%
+  mutate(expressed = ifelse(max_tpm >= 0.5, "expressed", "no expression"))
+```
+
+
+Plot each gene:
+
+```{r}
+# gene_ID_list and gene_name_list should be vectors with the same length
+plot_betalain_counts <- function(gene_ID_list, gene_name_list){
+  output <- list()
+  for (i in 1:length(gene_ID_list)){
+      # create dataframe with counts for a particular gene
+      transcript_tpm <- betalain_quant %>%
+        filter(transcript_id == gene_ID_list[i])
+      # plot counts
+      output[[i]] <- ggplot(data=transcript_tpm) +
+        geom_col(aes(x = bulk, 
+                     y = tpm, 
+                     fill = bulk)) +
+        theme_classic() +
+        scale_fill_manual(values = c("chartreuse3", "red3", "chartreuse3", "red3"), guide = "none") +
+        scale_shape_discrete(guide = guide_legend(override.aes = list(size=3),
+                                                  nrow = 2)) +
+        scale_x_discrete(labels = c("Regulator BSA",
+                                    "Regulator BSA",
+                                    "Biosynthesis BSA",
+                                    "Biosynthesis BSA")) +
+        labs(title = paste0(gene_name_list[i], " (", gene_ID_list[i], ")"),
+             y = "TPM",
+             shape = "") +
+        theme(axis.title.y = element_text(size = 30),
+              axis.text.y = element_text(size = 25), 
+              title = element_text(size = 25),
+              legend.position = c("bottom"),
+              axis.title.x = element_blank(),
+              axis.text.x = element_text(angle = 45, vjust = 1, hjust=1, size = 25))
+  }
+  return(output)
+}
+
+# save as list of plots
+# since the table is in long format, use each transcript only once
+betalain_plots <- plot_betalain_counts(gene_ID_list = betalain_quant$transcript_id[1:(length(betalain_quant$transcript_id)/4)],
+                                       gene_name_list = betalain_quant$pathway_gene[1:(length(betalain_quant$transcript_id)/4)])
+
+
+patchplot <- betalain_plots[[8]] + betalain_plots[[9]] + betalain_plots[[11]] + 
+  betalain_plots[[10]] + betalain_plots[[5]] + betalain_plots[[4]] + betalain_plots[[2]] + betalain_plots[[3]] +
+  plot_layout(nrow = 3) +
+  plot_annotation(tag_levels = "A") & 
+  theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
+        plot.tag = element_text(size = 35))
+
+ggsave(filename = "plots/flower_mapping_expression/betalain_gene_kallisto.png",
+       width = 28,
+       height = 20)
+
+```
+
+Produce plots of gene expression only for biosynthesis BSA:
+
+```{r}
+# prepare list of gene names with AhMYB2 isoforms
+gene_names <- betalain_quant$pathway_gene[1:(length(betalain_quant$transcript_id)/4)]
+gene_names[8] <- "AhMYB2.1"
+gene_names[9] <- "AhMYB2.2"
+
+
+plot_betalain_counts <- function(gene_ID_list, gene_name_list){
+  output <- list()
+  for (i in 1:length(gene_ID_list)){
+      # create dataframe with counts for a particular gene
+      transcript_tpm <- betalain_quant %>%
+        filter(transcript_id == gene_ID_list[i],
+               bulk == "AM_00331_gf" | bulk == "AM_00331_rf")
+      # add minimum tpm threshold of 0.5 in atleast one sample
+      if (min(transcript_tpm$tpm) < 0.5) {
+        print(paste0(gene_name_list[i], " is not expressed!"))
+        next
+      }
+      # plot counts
+      output[[i]] <- ggplot(data=transcript_tpm) +
+        geom_col(aes(x = bulk, 
+                     y = tpm, 
+                     fill = bulk)) +
+        theme_classic() +
+        scale_fill_manual(values = c("chartreuse3", "red3", "chartreuse3", "red3"), guide = "none") +
+        scale_shape_discrete(guide = guide_legend(override.aes = list(size=3),
+                                                  nrow = 2)) +
+        labs(title = paste0(gene_name_list[i]),
+             y = "TPM",
+             shape = "") +
+        theme(axis.title.y = element_text(size = 43),
+              axis.text.y = element_text(size = 38), 
+              title = element_text(size = 45),
+              legend.position = c("bottom"),
+              axis.title.x = element_blank(),
+              axis.text.x = element_blank())
+  }
+  return(output)
+}
+
+# save as list of plots
+# since the table is in long format, use each transcript only once
+betalain_plots <- plot_betalain_counts(gene_ID_list = betalain_quant$transcript_id[1:(length(betalain_quant$transcript_id)/4)],
+                                       gene_name_list = gene_names)
+
+# save all plots
+for (i in 1:length(betalain_plots)){
+  ggsave(filename = paste0("plots/flower_mapping_expression/", gene_names[i], ".png"),
+       plot = betalain_plots[[i]],
+       height = 6,
+       width = 8)
+}
+
+```
+
+
+Plot gene expression as a matrix:
+
+```{r}
+# only regulator BSA color bulk
+regulator_quant <- betalain_quant %>%
+  filter(bulk == "AM_00331_gf" | bulk == "AM_00331_rf",
+         !(pathway_gene %in% c("AhMYB3", "AhMYB4", "AhDODAα2","AhCYP76AD5"))) %>%
+  mutate(label = paste0(pathway_gene, substr(transcript_id, 10,11)))
+
+regulator_quant$label <- factor(regulator_quant$label, levels = c("AhBetanidin6GT.1","AhBetanidin5GT.1",
+                                                                  "AhcDOPA5GT.1","AhDODAα1.1",
+                                                                  "AhCYP76AD2.1","AhMYB2.2","AhMYB2.1"))
+
+# plot each gene, but only the comparison between red and green flower
+ggplot(data=regulator_quant) +
+  geom_tile(aes(x = bulk, y = label, fill = tpm)) +
+  scale_fill_distiller(palette = "RdYlBu", trans = "log10", breaks = c(3,30,300)) +
+  labs(fill = "TPM") +
+  scale_x_discrete(labels = c("Green flower", "Red flower")) +
+  theme_classic() +
+  #expand_limits(fill = 300) +
+  theme(text = element_text(size=22),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        legend.position = "bottom",
+        legend.direction = "vertical")
+
+ggsave(filename = "plots/flower_mapping_expression/flower_expression_grid.png",
+       width = 4,
+       height = 8, 
+       dpi = 500)
+
+```
+
+
+
+
+
+
+

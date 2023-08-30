@@ -1,0 +1,452 @@
+---
+title: "MYB_identification_braker2"
+author: "twinkle1"
+date: "2/2/2022"
+output: html_document
+---
+
+```{r setup}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table)
+library(seqinr)
+library(ape)
+library(ggtree)
+library(treeio)
+library(poppr)
+library(ggmsa)
+library(Biostrings)
+knitr::opts_knit$set(root.dir = "/home/tom/Documents/projects/Ahyp_v2_2/")
+```
+
+## Introduction
+
+This script takes the braker2 output and runs an HMMscan using the MYB DNA-binding domain. It uses the filtering script from the bachelor thesis to subset the R2R3 MYBs and uses those to create a multiple sequence alignment with ClustalOmega and a phylogenetic NJ-tree using ClustalW2.
+
+
+## HMMscan using the MYB DNA-binding domain:
+
+```{bash}
+mkdir -p data/annotation_analysis/myb_annotation/hmmscan
+
+hmmscan --domtblout data/annotation_analysis/myb_annotation/hmmscan/out.txt data/annotation_analysis/myb_annotation/myb_profile/Myb_DNA-binding.hmm polished_genome_annotation/annotation/Ahypochondriacus_2.2_polished_corrected.prot.fasta
+```
+
+
+## MYB filtering
+
+Takes domtblout output of the HMMscan using the MYB DNA-binding domain HMM profile. Filters identified MYB proteins and classifies them into subgroups based on adjacent repeats of the MYB DNA-binding domain.
+
+
+```{r}
+# Read hmmscan output file into variable data (domtblout format)
+data <- read.table('data/annotation_analysis/myb_annotation/hmmscan/out.txt', row.names = NULL, fill = T)
+## Add column including the length of alignment
+data <- data %>%
+  mutate(alignment_length = V17-V16)
+## Add Column names back
+colnames(data) <- c('target_name','target_accession','tlen','query_name','accession','qlen','E-value','score_all',
+                    'bias_all','nr_domain','total_domains','c-Evalue',
+                    'i-Evalue','score_domain','bias_domain','from_hmm_coord','to_hmm_coord','from_ali_coord','to_ali_coord','from_env_coord',
+                    'to_enc_coord','acc','description','of','target','alignment_length')
+
+# filtering function:
+filter_domains <- function(data){
+  # Filter based on domain_score, alignment_length and acc
+  ## Filter for a domain score of above 25
+  data_filtered <- data %>%
+    filter(score_domain > 25)
+  ## Now filter for a alignment_length of over 20 also, discards domains that are not alignened properly
+  data_filtered <- data_filtered %>%
+    filter(alignment_length > 20)
+  ## Now also filter for acc > 0.8
+  data_filtered_acc <- data_filtered %>%
+    filter(acc > 0.8)
+  ## Filter for adjacent domains
+  ### Make sure that the data is sorted by query_name and each query_name's domain starting position
+  data_adjacent <- arrange(data_filtered_acc,query_name)
+  ### Create the variable n and assign it the number of rows of the dataframe
+  n <- nrow(data_adjacent)
+  ### Create an empty vector
+  vec <- c()
+  ### For each row from row 1 to row n-1 check if the query_name column of the next row is equal to the query_name column of this row.
+  ### If this is not the case (MYB with just 1 domain, last domain in a multi domain MYB) assign '0' to the vector.
+  ### If this is the case, check whether the start position of the next domain and the end position of the current one are a maximum
+  ### of 15 AA apart.
+  ### If they are close assign '0' to the vector, if they are further apart assign '1' to the vector
+  ### This way a checksum can be created for each protein, if the checksum is unequal to 0 one or more of its domains are
+  ### too far apart
+  for(i in seq(1,n-1)) {
+    if(data_adjacent[i,4] == data_adjacent[i+1,4]) {
+      if(data_adjacent[i+1,18] - data_adjacent[i,19] < 15) {
+        vec <- c(vec,'0')
+      } else {
+        vec <- c(vec,'1')
+      }
+    } else {
+      vec <- c(vec,'0')
+    }
+  }
+  ### Add one additional 'NA' as the last value
+  vec <- c(vec,'0')
+  ### Add the created vector as a column to the data
+  vec <- as.numeric(vec)
+  data_adjacent$adjacent <- vec
+  ### Group by query_name, sum the checksum (also convert it back to a dataframe for the head() function) and
+  ### join it back into the filtered data.
+  data_checksum <- data_adjacent %>%
+    group_by(query_name) %>%
+    summarize(.,checksum = sum(adjacent)) %>%
+    as.data.frame.data.frame() %>%
+    right_join(data_adjacent)
+  data_filtered <- data_checksum %>%
+    filter(checksum == 0)
+  ## Group the number of domains for each unique accession and count them
+  domains_per_protein <- data_filtered %>%
+    select(query_name) %>%
+    table(dnn = 'query_name')
+  domains_per_protein <- as.data.frame(domains_per_protein)
+  domains_per_protein <- domains_per_protein %>%
+    filter(Freq > 0)
+  ## Add back the filtered out R-R-type MYB-like proteins
+  ### Select the query_name of domains with checksum unequal to 0, only keep unique query_names
+  query_name <- data_checksum %>%
+    filter(checksum != 0) %>%
+    select(query_name)
+  query_name <- unique(query_name)
+  ### Manually create a vector named Freq with set Freq of 1, convert unique query names and frequency to a dataframe
+  Freq <- c(rep(1,nrow(query_name)))
+  R_R_type <- data.frame(query_name, Freq)
+  ### Combine the filtered dataframe and the manually set R-R-type MYB-like proteins
+  domains_per_protein <- rbind(domains_per_protein, R_R_type)
+  return(domains_per_protein)
+}
+
+# perform filtering
+filtered_mybs <- filter_domains(data)
+
+# add gene names to the dataframe
+filtered_mybs <- filtered_mybs %>%
+  mutate(gene_name = gsub("\\..*","", query_name))
+
+# e.g. number of R2R3 myb isoforms and genes
+nrow(filtered_mybs[filtered_mybs$Freq == 4,])
+length(unique(filtered_mybs[filtered_mybs$Freq == 2,]$gene_name))
+```
+
+
+## Subsetting the fasta file using the name list
+
+Extracting only the R2R3 mybs (with two adjacent MYB domains).
+
+```{r}
+# write dataframe of MYB transcript names, remove MYB-like genes:
+filtered_mybs <- filtered_mybs[filtered_mybs$Freq > 1,]
+
+# write gene names to file
+write.csv(filtered_mybs, file = "data/annotation_analysis/myb_annotation/myb_names.txt",
+            quote = F,
+            row.names = F)
+```
+
+## Basic stats
+
+Calculate basic stats for identified MYB genes using the genome annotation
+
+```{r}
+# set up function for reading in a gtf file
+read.gtf <- function(file){
+  # based on: https://www.biostars.org/p/272889/
+  # read in the gtf file:
+  gff <- fread(file)
+  setnames(gff, names(gff), c("chr","source","type","start","end","score","strand","phase","attributes"))
+  # subset attribute column into the gene and transcript id columns
+  # function for extracting the two attributes
+  extract_attributes <- function(gtf_column, att_of_interest){
+    att <- strsplit(gtf_column, "; ")
+    att <- gsub("\"","",unlist(att))
+    att <- gsub(";","",unlist(att))
+    if(!is.null(unlist(strsplit(att[grep(att_of_interest, att)], " ")))){
+      return( unlist(strsplit(att[grep(att_of_interest, att)], " "))[2])
+    }else{
+      return(NA)
+    }
+  }
+  # using the function to subset gene and transcript id:
+  gff$gene_id <- unlist(lapply(gff$attributes, extract_attributes, "gene"))
+  gff$transcript_id <- unlist(lapply(gff$attributes, extract_attributes, "transcript"))
+  return(gff)
+}
+
+# read annotation and filter for MYB genes
+annotation <- read.gtf(file = "polished_genome_annotation/annotation/Ahypochondriacus_2.2_polished_corrected.gtf")
+annotation <- annotation %>%
+  filter(transcript_id %in% filtered_mybs$query_name)
+
+# read in MYB subgroup and function assignment
+myb_function <- read_csv(file = "data/manual_sheets/MYB_with_subgroups_and_function.csv")
+myb_function <- myb_function %>%
+  mutate(Function = replace_na(Function, "-"))
+
+# count number of exons
+exon_count <- annotation %>%
+  filter(type == "CDS") %>%
+  group_by(transcript_id) %>%
+  summarise(exon_count = n())
+
+# calculate CDS and protein length
+myb_length <- annotation %>%
+  filter(type == "CDS") %>%
+  mutate(feature_length = (end - start)+1 ) %>%
+  group_by(transcript_id) %>%
+  summarise(cds_length = sum(feature_length)) %>%
+  mutate(aa_length = cds_length / 3)
+
+# record chromosome and position
+myb_position <- annotation %>%
+  filter(type == "transcript") %>%
+  select(transcript_id, chr, start, end, strand)
+
+# join tables and save
+myb_stats <- left_join(filtered_mybs, myb_length, by = c("query_name" = "transcript_id"))
+myb_stats <- left_join(myb_stats, exon_count, by = c("query_name" = "transcript_id"))
+myb_stats <- left_join(myb_stats, myb_position, by = c("query_name" = "transcript_id"))
+myb_stats <- left_join(myb_stats, myb_function, by = c("query_name" = "transcript_id"))
+
+# format correctly
+myb_stats <- myb_stats %>%
+  mutate(subfamily = ifelse(Freq == 2, "R2R3", ifelse(Freq == 3, "3R", "4R")),
+         transcript_id = query_name,
+         gene_id = gene_name) %>%
+  group_by(gene_id) %>%
+  #mutate(gene_name = paste0("AmMYB", cur_group_id())) %>%
+  mutate(gene_name = paste0("-")) %>%
+  ungroup() %>%
+  select(gene_name, gene_id, transcript_id, chr, start, end, strand, subfamily, aa_length, exon_count, Subgroup, Function) %>%
+  as.data.frame()
+
+# adjust name for selected genes
+myb_stats[52,1] <- "AmMYBl1"
+myb_stats[93:94,1] <- "AmMYB2"
+myb_stats[62,1] <- "AmMYB3"
+myb_stats[63,1] <- "AmMYB4"
+
+# write output file
+write.csv(myb_stats, file = "data/annotation_analysis/myb_annotation/myb_stats.csv",
+            quote = T,
+            row.names = F)
+```
+
+
+Analyse basic statistics:
+
+```{r}
+# read in data
+myb_stats <- read.csv(file = "data/annotation_analysis/myb_annotation/myb_stats.csv")
+
+# exon count of R2R3 MYBs
+myb_stats %>%
+  filter(subfamily == "R2R3") %>%
+  group_by(exon_count) %>%
+  summarise(count = n()) %>%
+  mutate(percentage = (count/sum(count))*100)
+```
+
+
+
+Extract myb protein fasta based on the identified MYB names.
+
+```{bash}
+seqkit faidx -l data/annotation_analysis/myb_annotation/myb_names.txt polished_genome_annotation/annotation/Ahypochondriacus_2.2_polished_corrected.prot.fasta > data/annotation_analysis/myb_annotation/AH_myb.fasta
+```
+
+## Alignment and Phylogeny
+
+Creating the alignment with clustalOmega, the phylogeny using the phylogeny function of clustalw2. Downloaded MYB sequences of Beta vulgaris and Arabidopsis thaliana:
+
+Myb data from B. vulgaris and A. thaliana obtained from:
+https://static-content.springer.com/esm/art%3A10.1186%2Fs12870-014-0249-8/MediaObjects/12870_2014_249_MOESM4_ESM.txt
+Supplements of: Stracke, R., Holtgräwe, D., Schneider, J., Pucker, B., Rosleff Sörensen, T., & Weisshaar, B. (2014). Genome-wide identification and characterisation of R2R3-MYB genes in sugar beet (Beta vulgaris). BMC plant biology, 14(1), 1-17.
+
+```{bash}
+# align MYBs using clustalOmega
+cat data/annotation_analysis/myb_annotation/AH_myb.fasta data/annotation_analysis/myb_annotation/bvulgaris_athaliana_myb.fasta | /home/tom/Documents/tools/clustalo-1.2.4-Ubuntu-x86_64 --threads=6 --in=- --outfile=data/annotation_analysis/myb_annotation/all_myb.aln --force
+
+# create phylogeny from alignment using clustalw2
+/home/tom/Documents/tools/clustalw-2.1-linux-x86_64-libcppstatic/clustalw2 -bootstrap=1000 -infile=data/annotation_analysis/myb_annotation/all_myb.aln -outfile=data/annotation_analysis/myb_annotation/all_myb.phb
+```
+
+## Plot phylogeny
+
+I will try to use the same functions as I did for my bachelor thesis.
+
+```{r}
+# read in the bootstrapped phylogeny
+tree <- read.raxml("data/annotation_analysis/myb_annotation/all_myb.phb")
+
+# create tree object
+t <- ggtree(tree, branch.length = 'none', layout='circular', size=0.2)
+
+# create dataframe used for coloring
+df <- na.omit(t$data[,3])
+df <- df %>%
+  mutate(species = substr(label, 1, 2))
+df$species <- as.factor(df$species)
+
+
+# create color palette for plotting:
+pal2 <- c("#FF0000", "#00A08A", "#F2AD00", "#F98400",
+"#D55E00", "#E69F00", "#56B4E9", "#0072B2")
+
+
+t_species <- t %<+% df +
+  geom_tiplab(size=2,
+              aes(angle = angle, color = species,
+                  hjust= -0.06)) +
+  geom_nodelab(size=1,
+            nudge_x = 0.5,
+            aes(label=bootstrap, angle=angle)) +
+  scale_shape_discrete(solid=F) +
+  scale_color_manual(values = pal2) +
+  theme(legend.position = 'none',
+        legend.direction = 'vertical',
+        plot.title = element_text(size=25, face='bold'),
+        legend.title = element_text(size = 20, face='bold'),
+        legend.text = element_text(size = 14),
+        legend.key.size = unit(1,'cm'))
+
+# exchange specific tip labels with their respective gene names
+# BvMYB1
+t_species$data$label[t_species$data$label == "Bv_jkkr"] <- "BvMYB1"
+# AmMYBl1
+t_species$data$label[t_species$data$label == "AHp014591.1"] <- "AmMYBl1"
+
+t_species
+
+
+```
+
+Annotate the subgroups within the phylogenetic tree, based on the A. thaliana and B. vulgaris assignments:
+
+```{r}
+plot_clade <- function(node, label){
+  # subset angles from ggplot object
+  angles <- t_species$data$angle
+  # mark labeled subgroup in the tree between two tips,
+  # calculate the angle as average between the two tips
+  geom_cladelab(node=node, 
+             barsize=0.5, 
+             offset = 4, 
+             fontsize=5, 
+             extend=0.1, 
+             offset.text = 0.2, 
+             label = label,
+             angle = angles[node])
+}
+
+# label clades according to their clade number
+t_species +
+  plot_clade(331,'S22') +
+  plot_clade(342,'S23') +
+  plot_clade(347,'3R') +
+  plot_clade(357,'S21') +
+  plot_clade(379,'4R') +
+  plot_clade(385,'S25') +
+  plot_clade(397,'S18') +
+  plot_clade(422,'S19+S20') +
+  plot_clade(308,'S16') +
+  plot_clade(492,'S10') +
+  plot_clade(487,'S24') +
+  plot_clade(501,'S11') +
+  plot_clade(528,'S12') +
+  plot_clade(513,'S9') +
+  plot_clade(460,'S13') +
+  plot_clade(446,'S4*') +
+  plot_clade(568,'S14') +
+  plot_clade(542,'S3') +
+  plot_clade(537,'S2') +
+  plot_clade(548,'S7*') +
+  plot_clade(603,'S6*') +
+  plot_clade(606,'S15') +
+  plot_clade(592,'S5*') +
+  plot_clade(476,'S8') +
+  plot_clade(554,'S1') +
+  plot_clade(415,'S17') +
+  plot_clade(419,'S17') +
+  plot_clade(439,'S17') +
+  plot_clade(598,'BvMYB1*') +
+  plot_clade(588,'AtMYB5*')
+  
+ggsave(filename = "plots/MYB_phylogenetic_tree.png",
+       width = 10,
+       height = 10,
+       dpi = 500)
+
+ggsave(filename = "plots/MYB_phylogenetic_tree.pdf",
+       device = "pdf",
+       width = 10,
+       height = 10,
+       dpi = 500)
+```
+
+
+## Alignment of betalain and anthocyanin MYBs
+
+Create and plot alignment of MYBs of S6 and BvMYB1-like clades.
+
+```{bash}
+mkdir plots/AmMYB2_figure/
+
+# align using clustalomega
+/home/tom/Documents/tools/clustalo-1.2.4-Ubuntu-x86_64 --in=data/annotation_analysis/myb_annotation/S6_betalain_myb_alignment/manual_S6.fasta --outfile=data/annotation_analysis/myb_annotation/S6_betalain_myb_alignment/manual_S6.aln
+```
+
+Import and plot alignment:
+
+```{r}
+# read in alignment
+S6_align <- readAAMultipleAlignment("data/annotation_analysis/myb_annotation/S6_betalain_myb_alignment/manual_S6.aln",
+                                    format = "fasta")
+S6_align@unmasked@ranges@NAMES <- c("AtMYB75 (PAP1)", "AtMYB90 (PAP2)", "AtMYB113", "AtMYB114", "AhMYB2.1", "AhMYB2.2", "BvMYB1", "Bv_ralf",
+                                    "AhMYB3.1","AhMYB4.1")
+
+# plot R2 and R3 domains of the sequence alignment
+ggmsa(S6_align,
+      start = 20,
+      end = 140,
+      seq_name = T,
+      by_conservation = F,
+      border = "black",
+      color = "Clustal") +
+  facet_msa(60) +
+  theme(text = element_text(size = 19),
+        plot.margin = unit(c(1,1,1,1), "cm"))
+
+# save the alignment
+ggsave(filename = "plots/AmMYB2_figure/S6_betalain_myb_align.png",
+       width = 9,
+       height = 6,
+       dpi = 320,
+       bg = "white")
+
+
+# plot only R3 domain in a single row
+ggmsa(S6_align,
+      start = 80,
+      end = 136,
+      seq_name = T,
+      by_conservation = F,
+      border = F,
+      color = "Chemistry_AA") +
+  theme(text = element_text(size = 11),
+        plot.margin = unit(c(0,0.5,0,0.5), "cm"))
+
+# save the alignment
+ggsave(filename = "plots/AmMYB2_figure/S6_betalain_myb_S6.png",
+       width = 9,
+       height = 2.5,
+       dpi = 400,
+       bg = "white")
+```
+
+

@@ -1,0 +1,216 @@
+---
+title: "genome_polishing_comparison"
+author: "twinkle1"
+date: '2022-07-27'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table)
+library(GenomicRanges)
+library(seqinr)
+knitr::opts_knit$set(root.dir = "/home/tom/Documents/projects/Ahyp_v2_2_publication/")
+```
+
+## Genome polishing comparison
+
+Compare the effect of genome polishing on the coding sequence prediction by CPC2. Start by running coding sequence prediction for both reference genome corrected isoseq sequence sets, the one corrected with the unpolished reference genome and the one corrected with the polished reference genome.
+
+Run CPC2 CDS prediction on both sequence sets:
+
+```{bash}
+mkdir data/isoseq/comparison_genome_polishing
+
+# unpolished genome
+/hom/tom/Documents/tools/CPC2_standalone-1.0.1/bin/CPC2.py -i data/isoseq/sqanti/output_old_genome/combined.collapsed.min_fl_2.filtered.underscore_corrected.fasta --ORF -o data/isoseq/comparison_genome_polishing/unpolished_isoseq_sqanti_cpc2
+
+/hom/tom/Documents/tools/CPC2_standalone-1.0.1/bin/CPC2.py -i data/isoseq/mapping_and_collapse_old_genome/combined.collapsed.min_fl_2.filtered.rep.fa --ORF -o data/isoseq/comparison_genome_polishing/unpolished_isoseq_cpc2
+
+# polished genome
+/hom/tom/Documents/tools/CPC2_standalone-1.0.1/bin/CPC2.py -i data/isoseq/sqanti/output_polished/combined.collapsed.min_fl_2.filtered_corrected.fasta --ORF -o data/isoseq/comparison_genome_polishing/polished_isoseq_sqanti_cpc2
+
+/hom/tom/Documents/tools/CPC2_standalone-1.0.1/bin/CPC2.py -i data/isoseq/mapping_and_collapse/combined.collapsed.min_fl_2.filtered.rep.fa --ORF -o data/isoseq/comparison_genome_polishing/polished_isoseq_cpc2
+```
+
+
+Compare the CDS prediction results from the two files:
+
+```{r}
+# load in cpc2 files for the unpolished genome
+unpolished_cpc2 <- read.table("data/isoseq/comparison_genome_polishing/unpolished_isoseq_cpc2.txt")
+unpolished_sqanti_cpc2 <- read.table("data/isoseq/comparison_genome_polishing/unpolished_isoseq_sqanti_cpc2.txt")
+
+# prepare for merge
+unpolished_cpc2 <- unpolished_cpc2 %>%
+  summarise(transcript_id = V1,
+            transcript_length = V2,
+            peptide_length = V3,
+            label = V9)
+unpolished_cpc2$transcript_id <- gsub("\\|.*","", unpolished_cpc2$transcript_id)
+
+unpolished_sqanti_cpc2 <- unpolished_sqanti_cpc2 %>%
+  summarise(transcript_id = V1,
+            transcript_length_s = V2,
+            peptide_length_s = V3,
+            label_s = V9)
+
+# merge tables
+merged_unpolished <- left_join(unpolished_cpc2, unpolished_sqanti_cpc2, by="transcript_id")
+
+# for comparison, keep only transcripts which are predicted as coding in at least one dataset
+merged_unpolished <- merged_unpolished %>%
+  filter(label == "coding" | label_s == "coding") %>%
+  mutate(length_diff = peptide_length - peptide_length_s)
+# positive values indicate longer peptide length in the uncorrected sequences, negative values indicate longer corrected peptide length
+
+# how many sequences have the same annotated peptide length?
+sum(merged_unpolished$peptide_length == merged_unpolished$peptide_length_s)
+sum(merged_unpolished$peptide_length == merged_unpolished$peptide_length_s)/nrow(merged_unpolished) # percentage
+# how many sequences differ in annotated peptide length?
+sum(merged_unpolished$peptide_length != merged_unpolished$peptide_length_s)
+sum(merged_unpolished$peptide_length != merged_unpolished$peptide_length_s)/nrow(merged_unpolished) # percentage
+
+sum(merged_unpolished$length_diff > 0) # how many longer before correction
+sum(merged_unpolished$length_diff < 0) # how many longer after correction
+
+# mean ORF length difference for transcripts with different ORF length predictions
+mean(abs(merged_unpolished[merged_unpolished$length_diff != 0,]$length_diff))
+
+# for how many sequences does coding prediction change by doing genome correction?
+table(interaction(as.factor(merged_unpolished$label), as.factor(merged_unpolished$label_s)))
+
+
+############# comparison with polished genome
+polished_cpc2 <- read.table("data/isoseq/comparison_genome_polishing/polished_isoseq_cpc2.txt")
+polished_sqanti_cpc2 <- read.table("data/isoseq/comparison_genome_polishing/polished_isoseq_sqanti_cpc2.txt")
+
+# prepare for merge
+polished_cpc2 <- polished_cpc2 %>%
+  summarise(transcript_id = V1,
+            transcript_length = V2,
+            peptide_length = V3,
+            label = V9)
+polished_cpc2$transcript_id <- gsub("\\|.*","", polished_cpc2$transcript_id)
+
+polished_sqanti_cpc2 <- polished_sqanti_cpc2 %>%
+  summarise(transcript_id = V1,
+            transcript_length_s = V2,
+            peptide_length_s = V3,
+            label_s = V9)
+
+# merge tables
+merged_polished <- left_join(polished_cpc2, polished_sqanti_cpc2, by="transcript_id")
+merged_polished <- merged_polished %>%
+  filter(label == "coding" | label_s == "coding") %>%
+  mutate(length_diff = peptide_length - peptide_length_s)
+
+# how many sequences have the same annotated peptide length?
+sum(merged_polished$peptide_length == merged_polished$peptide_length_s)
+sum(merged_polished$peptide_length == merged_polished$peptide_length_s)/nrow(merged_polished)
+# how many sequences differ in annotated peptide length?
+sum(merged_polished$peptide_length != merged_polished$peptide_length_s)
+sum(merged_polished$peptide_length != merged_polished$peptide_length_s)/nrow(merged_polished)
+
+# mean ORF length difference for transcripts with different ORF length predictions
+mean(abs(merged_polished[merged_polished$length_diff != 0,]$length_diff))
+
+# for how many sequences does coding prediction change by doing genome correction?
+table(interaction(as.factor(merged_polished$label), as.factor(merged_polished$label_s)))
+```
+
+
+## BUSCO score of polished and unpolished sequences
+
+Create a bed file based on the cpc2 output which can be used to subset the coding sequence from the cpc2 input fasta files. Convert the CDS to protein sequence and use BUSCO afterwards to assess the completeness sequence set.
+
+```{r}
+# extract part of the fasta file based on bed positions from cpc2
+create_bed_from_cpc2 <- function(cpc2_output){
+  # read in the cpc2 input file, subset all coding sequences with intact ORF, then convert to bed
+  cpc2 <- read.table(cpc2_output)
+  # filter for coding transcripts with an intact ORF
+  cpc2 <- cpc2 %>%
+    filter(V9 == "coding" & V6 == 1) %>%
+    summarise(ID=V1, start=V7-1, end=V7+(V3*3)-1)
+  return(cpc2)
+}
+
+# write cpc2 output as bed file
+
+### isoseq unpolished
+isoseq_unpolished_bed <- create_bed_from_cpc2("data/isoseq/comparison_genome_polishing/unpolished_isoseq_cpc2.txt") 
+write_tsv(isoseq_unpolished_bed, 
+          file = "data/isoseq/comparison_genome_polishing/unpolished_isoseq_cpc2.bed",
+          col_names = F)
+
+### isoseq unpolished
+isoseq_unpolished_sqanti_bed <- create_bed_from_cpc2("data/isoseq/comparison_genome_polishing/unpolished_isoseq_sqanti_cpc2.txt") 
+write_tsv(isoseq_unpolished_sqanti_bed, 
+          file = "data/isoseq/comparison_genome_polishing/unpolished_isoseq_sqanti_cpc2.bed",
+          col_names = F)
+
+### isoseq polished
+isoseq_polished_bed <- create_bed_from_cpc2("data/isoseq/comparison_genome_polishing/polished_isoseq_cpc2.txt") 
+write_tsv(isoseq_polished_bed, 
+          file = "data/isoseq/comparison_genome_polishing/polished_isoseq_cpc2.bed",
+          col_names = F)
+
+### isoseq sqanti polished
+isoseq_polished_sqanti_bed <- create_bed_from_cpc2("data/isoseq/comparison_genome_polishing/polished_isoseq_sqanti_cpc2.txt") 
+write_tsv(isoseq_polished_sqanti_bed, 
+          file = "data/isoseq/comparison_genome_polishing/polished_isoseq_sqanti_cpc2.bed",
+          col_names = F)
+```
+
+Extract predicted protein sequence and run busco:
+
+```{bash}
+mkdir -p data/annotation_analysis/busco
+
+### ISOSEQ UNPOLISHED
+# Extract the coding sequence from the fasta file
+tools/bedtools getfasta -fi data/isoseq/mapping_and_collapse_old_genome/combined.collapsed.min_fl_2.filtered.rep.fa -fo data/isoseq/comparison_genome_polishing/unpolished_isoseq_cds.fasta -bed data/isoseq/comparison_genome_polishing/unpolished_isoseq_cpc2.bed
+# translate into protein sequence
+seqkit translate data/isoseq/comparison_genome_polishing/unpolished_isoseq_cds.fasta > data/isoseq/comparison_genome_polishing/unpolished_isoseq_cds.faa
+# to prepare for busco, trim the fasta header
+sed 's/|.*//' data/isoseq/comparison_genome_polishing/unpolished_isoseq_cds.faa > data/isoseq/comparison_genome_polishing/unpolished_isoseq_cds_fixed.faa
+# run busco
+busco -m protein -i data/isoseq/comparison_genome_polishing/unpolished_isoseq_cds_fixed.faa -o unpolished_isoseq_cds -l embryophyta_odb10 --out_path data/annotation_analysis/busco/ --download_path data/busco/datasets/ -c 7 -f
+
+### ISOSEQ SQANTI UNPOLISHED
+# Extract the coding sequence from the fasta file
+tools/bedtools getfasta -fi data/isoseq/sqanti/output_old_genome/combined.collapsed.min_fl_2.filtered.underscore_corrected.fasta -fo data/isoseq/comparison_genome_polishing/unpolished_isoseq_sqanti_cds.fasta -bed data/isoseq/comparison_genome_polishing/unpolished_isoseq_sqanti_cpc2.bed
+# translate into protein sequence
+seqkit translate data/isoseq/comparison_genome_polishing/unpolished_isoseq_sqanti_cds.fasta > data/isoseq/comparison_genome_polishing/unpolished_isoseq_sqanti_cds.faa
+# run busco
+busco -m protein -i data/isoseq/comparison_genome_polishing/unpolished_isoseq_sqanti_cds.faa -o unpolished_isoseq_sqanti_cds -l embryophyta_odb10 --out_path data/annotation_analysis/busco/ --download_path data/busco/datasets/ -c 7 -f
+
+### ISOSEQ POLISHED
+# Extract the coding sequence from the fasta file
+tools/bedtools getfasta -fi data/isoseq/mapping_and_collapse/combined.collapsed.min_fl_2.filtered.rep.fa -fo data/isoseq/comparison_genome_polishing/polished_isoseq_cds.fasta -bed data/isoseq/comparison_genome_polishing/polished_isoseq_cpc2.bed
+# translate into protein sequence
+seqkit translate data/isoseq/comparison_genome_polishing/polished_isoseq_cds.fasta > data/isoseq/comparison_genome_polishing/polished_isoseq_cds.faa
+# to prepare for busco, trim the fasta header
+sed 's/|.*//' data/isoseq/comparison_genome_polishing/polished_isoseq_cds.faa > data/isoseq/comparison_genome_polishing/polished_isoseq_cds_fixed.faa
+# run busco
+busco -m protein -i data/isoseq/comparison_genome_polishing/polished_isoseq_cds_fixed.faa -o polished_isoseq_cds -l embryophyta_odb10 --out_path data/annotation_analysis/busco/ --download_path data/busco/datasets/ -c 7 -f
+
+### ISOSEQ SQANTI POLISHED
+# Extract the coding sequence from the fasta file
+tools/bedtools getfasta -fi data/isoseq/sqanti/output_polished/combined.collapsed.min_fl_2.filtered_corrected.fasta -fo data/isoseq/comparison_genome_polishing/polished_isoseq_sqanti_cds.fasta -bed data/isoseq/comparison_genome_polishing/polished_isoseq_sqanti_cpc2.bed
+# translate into protein sequence
+seqkit translate data/isoseq/comparison_genome_polishing/polished_isoseq_sqanti_cds.fasta > data/isoseq/comparison_genome_polishing/polished_isoseq_sqanti_cds.faa
+# run busco
+busco -m protein -i data/isoseq/comparison_genome_polishing/polished_isoseq_sqanti_cds.faa -o polished_isoseq_sqanti_cds -l embryophyta_odb10 --out_path data/annotation_analysis/busco/ --download_path data/busco/datasets/ -c 7 -f
+```
+
+
+
+
+
+
+
+
+

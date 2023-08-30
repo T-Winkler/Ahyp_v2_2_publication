@@ -1,0 +1,92 @@
+---
+title: "Betalain_phylogenetic_analysis"
+author: "twinkle1"
+date: "2023-01-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggtree)
+library(ggrepel)
+knitr::opts_knit$set(root.dir = "/home/tom/Documents/projects/Ahyp_v2_2/")
+```
+
+## Phylogenetic analysis of betalain pathway genes
+
+Perform phylogenetic analysis of betalain pathway genes. Searched for protein fasta sequences of known betalain pathway genes. Aligned the fasta sequences using ClustalOmega with default settings. Created a neighbour joining tree with 1000 bootstrap replicates using ClustalW. Used seaview to correctly root the phylogeny. Perform alignment and tree construction:
+
+```{bash}
+mkdir -p data/annotation_analysis/betalains/phylogenetic_analysis/CYP76AD
+mkdir -p data/annotation_analysis/betalains/phylogenetic_analysis/DODA
+
+# CYP76AD
+### perform alignment
+/home/tom/Documents/tools/clustalo-1.2.4-Ubuntu-x86_64 --threads=6 --in=data/annotation_analysis/betalains/phylogenetic_analysis/CYP76AD/CYP76AD.fasta --outfile=data/annotation_analysis/betalains/phylogenetic_analysis/CYP76AD/CYP76AD.aln --force
+
+### create phylogeny, 1000 bootstrap replicates
+/home/tom/Documents/tools/clustalw-2.1-linux-x86_64-libcppstatic/clustalw2 -bootstrap=1000 -infile=data/annotation_analysis/betalains/phylogenetic_analysis/CYP76AD/CYP76AD.aln -outfile=data/annotation_analysis/betalains/phylogenetic_analysis/CYP76AD/CYP76AD.phb
+
+# DODA
+### perform alignment
+/home/tom/Documents/tools/clustalo-1.2.4-Ubuntu-x86_64 --threads=6 --in=data/annotation_analysis/betalains/phylogenetic_analysis/DODA/DODA.fasta --outfile=data/annotation_analysis/betalains/phylogenetic_analysis/DODA/DODA.aln --force
+
+### create phylogeny, 1000 bootstrap replicates
+/home/tom/Documents/tools/clustalw-2.1-linux-x86_64-libcppstatic/clustalw2 -bootstrap=1000 -infile=data/annotation_analysis/betalains/phylogenetic_analysis/DODA/DODA.aln -outfile=data/annotation_analysis/betalains/phylogenetic_analysis/DODA/DODA.phb
+```
+
+## Alignment plotting
+
+After rerooting to the outgroup using seaview:
+
+```{r}
+# read in the CYP76AD1 tree
+tree.CYP <- read.tree(file = "data/annotation_analysis/betalains/phylogenetic_analysis/CYP76AD/CYP76AD_rooted.phb")
+
+# adjust names
+tree.CYP$tip.label <- gsub("\\_.*", "", tree.CYP$tip.label)
+tree.CYP$tip.label[12] <- "AhCYP76AD2"
+tree.CYP$tip.label[15] <- "AhCYP76AD5"
+
+# plot tree
+ggtree(tree.CYP, layout = "rectangular") +
+  geom_nodelab(hjust = -0.1, geom = "text") +
+  geom_tiplab(align = T) +
+  xlim_tree(0.4)
+
+# save tree
+ggsave(filename = "plots/CYP76AD_rooted.png", width = 10)
+ggsave(filename = "plots/CYP76AD_rooted.pdf", width = 10)
+
+
+# read in the DODA tree
+tree.DODA <- read.tree(file = "data/annotation_analysis/betalains/phylogenetic_analysis/DODA/DODA_rooted.phb")
+
+# adjust names
+tree.DODA$tip.label <- gsub("\\_.*", "", tree.DODA$tip.label)
+tree.DODA$tip.label[1] <- "BvDODAβ"
+tree.DODA$tip.label[7] <- "AhDODAα1"
+tree.DODA$tip.label[4] <- "AhDODAα2"
+tree.DODA$tip.label[6] <- "CqDODA-1"
+tree.DODA$tip.label[2] <- "McDODAβ"
+tree.DODA$tip.label[9] <- "McDODAα1"
+tree.DODA$tip.label[3] <- "BvDODAα2"
+tree.DODA$tip.label[5] <- "BvDODAα1"
+
+# plot tree
+ggtree(tree.DODA, layout = "rectangular") +
+  geom_nodelab(hjust = -0.1, geom = "text") +
+  geom_tiplab(align = T) +
+  xlim_tree(0.37)
+
+ggsave(filename = "plots/DODA_rooted.png", width = 10)
+ggsave(filename = "plots/DODA_rooted.pdf", width = 10)
+```
+
+
+
+
+
+
+

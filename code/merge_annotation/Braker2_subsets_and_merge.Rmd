@@ -1,0 +1,251 @@
+---
+title: "BRAKER2_subsets_and_merge"
+author: "twinkle1"
+date: "2/18/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(data.table)
+library(GenomicRanges)
+library(seqinr)
+knitr::opts_knit$set(root.dir = "/home/tom/Documents/projects/Ahyp_v2_2_publication/")
+```
+
+The following script is used to create new files of differently supported subsets of braker2 predictions. Full and partially supported gene predictions are combined with the Iso-Seq data using TSEBRA.
+
+
+## Setup
+
+```{r}
+# set up function for reading in a gtf file
+read.gtf <- function(file){
+  # based on: https://www.biostars.org/p/272889/
+  # read in the gtf file:
+  gff <- fread(file)
+  setnames(gff, names(gff), c("chr","source","type","start","end","score","strand","phase","attributes"))
+  # subset attribute column into the gene and transcript id columns
+  # function for extracting the two attributes
+  extract_attributes <- function(gtf_column, att_of_interest){
+    att <- strsplit(gtf_column, "; ")
+    att <- gsub("\"","",unlist(att))
+    att <- gsub(";","",unlist(att))
+    if(!is.null(unlist(strsplit(att[grep(att_of_interest, att)], " ")))){
+      return( unlist(strsplit(att[grep(att_of_interest, att)], " "))[2])
+    }else{
+      return(NA)
+    }
+  }
+  # using the function to subset gene and transcript id:
+  gff$gene_id <- unlist(lapply(gff$attributes, extract_attributes, "gene"))
+  gff$transcript_id <- unlist(lapply(gff$attributes, extract_attributes, "transcript"))
+  return(gff)
+}
+
+# Create function for converting gtf dataframe to genomic ranges onbject
+Granges_from_gtf <- function(gtf){
+  # requires the GRanges and tidyverse packages
+  gene_structures <- gtf %>%
+  group_by(transcript_id) %>% # group by transcript id
+  summarise(gene_start = min(start),
+            gene_end = max(end),
+            seqnames = unique(chr), # all sequences should be on the same chromosome
+            gene_strand = unique(strand))
+  # use the gene_structures object to create the genomic ranges object
+  gene_ranges <- GRanges(seqnames = gene_structures$seqnames, 
+                         ranges = IRanges(start=gene_structures$gene_start, 
+                                          end=gene_structures$gene_end,
+                                          names = gene_structures$transcript_id), 
+                         strand = gene_structures$gene_strand)
+  return(gene_ranges)
+}
+
+
+# Create a function to report all transcripts within a read.gtf object, that have both a start and stop codons annotated
+report_both_codons <- function(gtf_object){
+  # report all those transcript ids in the gtf file, which have both a start and a stop codon
+  # summarize by transcript and type
+  x <- gtf_object %>%
+      group_by(transcript_id, type) %>%
+      summarise(count = n())
+  # get the names of subsets with exactly start or stop codon
+  ids_with_start <- x[x$type == "start_codon" & x$count == 1,]$transcript_id
+  ids_with_stop <- x[x$type == "stop_codon" & x$count == 1,]$transcript_id
+  # ids with both codons are returned
+  return(ids_with_start[ids_with_start %in% ids_with_stop])
+}
+```
+
+
+## Main
+
+### Generate supported subsets
+
+Create differently supported subsets using the available script from augustus/braker2:
+
+```{bash}
+mkdir -p data/braker_analysis/external_evidence/polished_prot_rna/fixed_subsets
+
+# activate busco environment for the Augustus script
+conda activate busco
+
+# extract braker aa and cds, also generate the bad_genes.lst file
+/home/tom/Documents/tools/Augustus/scripts/getAnnoFastaFromJoingenes.py -g polished_genome_annotation/assembly/Ahypochondriacus_2.2_polished.softmasked.fasta -f data/braker2/polished_prot_rna/braker.gtf -s FILTER -o data/braker2/polished_prot_rna/braker_extracted
+
+# select differently supported subsets based on the amount of support
+tools/BRAKER/scripts/predictionAnalysis/selectSupportedSubsets.py --noSupport data/braker_analysis/external_evidence/polished_prot_rna/no_support.txt --fullSupport data/braker_analysis/external_evidence/polished_prot_rna/full_support.txt --anySupport data/braker_analysis/external_evidence/polished_prot_rna/any_support.txt data/braker2/polished_prot_rna/braker.gtf data/braker2/polished_prot_rna/hintsfile.gff
+
+# remove all lines that contain "#" characters in the beginning (cause issues at later steps)
+sed '/^#/d' data/braker_analysis/external_evidence/polished_prot_rna/full_support.txt > data/braker_analysis/external_evidence/polished_prot_rna/full_support_fixed.gtf
+sed '/^#/d' data/braker_analysis/external_evidence/polished_prot_rna/any_support.txt > data/braker_analysis/external_evidence/polished_prot_rna/any_support_fixed.gtf
+sed '/^#/d' data/braker_analysis/external_evidence/polished_prot_rna/no_support.txt > data/braker_analysis/external_evidence/polished_prot_rna/no_support_fixed.gtf
+```
+
+
+Generate a dataframe with the transcript ids based on the differently supported subsets. The dataframe can be saved as RDS object and can be loaded in subsequent runs. The "fixed" gtf files have lines with only "###" between the different genes removed.
+
+```{r}
+# load in the support set gtfs
+full.support <- read.gtf("data/braker_analysis/external_evidence/polished_prot_rna/full_support_fixed.gtf")
+any.support <- read.gtf("data/braker_analysis/external_evidence/polished_prot_rna/any_support_fixed.gtf")
+no.support <- read.gtf("data/braker_analysis/external_evidence/polished_prot_rna/no_support_fixed.gtf")
+
+# load in the genes with internal stop codons, as detected by the getAnnoFastaFromJoingenes script (see braker2_results folder readme.txt)
+badgenes <- read.table("data/braker_analysis/external_evidence/polished_prot_rna/bad_genes.lst")
+
+# extract the gene names with both, annotated start and annotated stop codons
+codons_any <- report_both_codons(any.support)
+codons_no <- report_both_codons(no.support)
+codons <- c(codons_any, codons_no)
+
+
+### Create dataframe for later filtering steps
+# get the transcript ids from the subsets
+full.ids <- unique(full.support$transcript_id) #18405
+any.ids <- unique(any.support$transcript_id) #32230
+partial.ids <- any.ids[!any.ids %in% full.ids] #13825
+no.ids <- unique(no.support$transcript_id) #7443
+
+# create dataframe with the subset transcript ids and the support category
+all.ids <- c(full.ids, partial.ids, no.ids)
+support <- c(rep("full", length(full.ids)), 
+             rep("partial", length(partial.ids)), 
+             rep("no", length(no.ids)))
+support.df <- data.frame(all.ids, support)
+
+
+# filter out internal stop codons
+support.df <- support.df[!support.df$all.ids %in% badgenes$V1,] 
+# exclude all annotated genes that do not have annotated start and stop codons
+fixed_support.df <- support.df[support.df$all.ids %in% codons,]
+
+
+##################################
+# write created dataframe as rds object:
+saveRDS(fixed_support.df, file="data/braker_analysis/external_evidence/polished_prot_rna/external_evidence.RDS")
+
+```
+
+
+Filter out predicted genes with internal stop codons as well as predicted genes without start and stop codons. Write the filtered gtf files in the end.
+
+```{r}
+# load in the gtf files to subset
+full.support <- read.gtf("data/braker_analysis/external_evidence/polished_prot_rna/full_support_fixed.gtf")
+any.support <- read.gtf("data/braker_analysis/external_evidence/polished_prot_rna/any_support_fixed.gtf")
+no.support <- read.gtf("data/braker_analysis/external_evidence/polished_prot_rna/no_support_fixed.gtf")
+
+# load in the annotation dataframe:
+support.df <- readRDS(file="data/braker_analysis/external_evidence/polished_prot_rna/external_evidence.RDS")
+
+# create partial support dataframe:
+partial.support <- any.support[!any.support$transcript_id %in% full.support$transcript_id,]
+
+# subset based on the support dataframe:
+full.support.filtered <- full.support[full.support$transcript_id %in% support.df$all.ids,] # no transcript is excluded
+#length(unique(full.support[!full.support$transcript_id %in% support.df$all.ids,]$transcript_id))
+partial.support.filtered <- partial.support[partial.support$transcript_id %in% support.df$all.ids,] # 73 transcripts are excluded
+#length(unique(partial.support[!partial.support$transcript_id %in% support.df$all.ids,]$transcript_id))
+no.support.filtered <- no.support[no.support$transcript_id %in% support.df$all.ids,] # 567 transcripts are excluded
+#length(unique(no.support[!no.support$transcript_id %in% support.df$all.ids,]$transcript_id))
+
+# total number of transcripts
+#length(unique(full.support.filtered$transcript_id)) # 22012 remain
+#length(unique(partial.support.filtered$transcript_id)) # 7013 remain
+#length(unique(no.support.filtered$transcript_id)) # 3579 remain
+
+### Write the filtered gtf files
+write.table(full.support.filtered[,1:9], 
+          "data/braker_analysis/external_evidence/polished_prot_rna/fixed_subsets/full_support.gtf",
+          col.names = F, row.names = F, quote=F, sep ="\t")
+write.table(partial.support.filtered[,1:9], 
+          "data/braker_analysis/external_evidence/polished_prot_rna/fixed_subsets/partial_support.gtf",
+          col.names = F, row.names = F, quote=F, sep ="\t")
+write.table(no.support.filtered[,1:9], 
+          "data/braker_analysis/external_evidence/polished_prot_rna/fixed_subsets/no_support.gtf",
+          col.names = F, row.names = F, quote=F, sep ="\t")
+```
+
+After filtering the gtf files, use the filtered files in order to subset the codingseq and amino acid fasta files. Load the coding sequence and amino acid fasta files and filter them using the support dataframe. 
+
+```{r}
+library(seqinr)
+
+# load in the support dataframe
+support.df <- readRDS(file="data/braker_analysis/external_evidence/polished_prot_rna/external_evidence.RDS")
+support.df$all.ids <- as.character(support.df$all.ids)
+
+# subset fasta files using the support dataframe
+braker_dna <- read.fasta("data/braker2/polished_prot_rna/braker_extracted.codingseq",
+                            seqtype = "DNA")
+
+# filter the different subsets
+braker_dna.filtered <- braker_dna[getName(braker_dna) %in% support.df[,1]] # 39141 sequences
+braker_dna.full.filtered <- braker_dna[getName(braker_dna) %in% support.df[support.df$support == "full",1]] # 18404 sequences
+braker_dna.partial.filtered <- braker_dna[getName(braker_dna) %in% support.df[support.df$support == "partial",1]] # 13723 sequences
+braker_dna.no.filtered <- braker_dna[getName(braker_dna) %in% support.df[support.df$support == "no",1]] # 7014 sequences
+
+# write subsets
+write.fasta(sequences=braker_dna.filtered, 
+            names=names(braker_dna.filtered), 
+            file.out = "data/braker_analysis/external_evidence/polished_prot_rna/fixed_subsets/braker_all.fasta")
+write.fasta(sequences=braker_dna.full.filtered, 
+            names=names(braker_dna.full.filtered), 
+            file.out = "data/braker_analysis/external_evidence/polished_prot_rna/fixed_subsets/full_support.fasta")
+write.fasta(sequences=braker_dna.partial.filtered, 
+            names=names(braker_dna.partial.filtered), 
+            file.out = "data/braker_analysis/external_evidence/polished_prot_rna/fixed_subsets/partial_support.fasta")
+write.fasta(sequences=braker_dna.no.filtered, 
+            names=names(braker_dna.no.filtered), 
+            file.out = "data/braker_analysis/external_evidence/polished_prot_rna/fixed_subsets/no_support.fasta")
+
+### repeat for the AA fasta files:
+# subset fasta files using the support dataframe
+braker_aa <- read.fasta("data/braker2/polished_prot_rna/braker_extracted.aa",
+                            seqtype = "AA")
+
+braker_aa.filtered <- braker_aa[getName(braker_aa) %in% support.df[,1]] # 39141 sequences
+braker_aa.full.filtered <- braker_aa[getName(braker_aa) %in% support.df[support.df$support == "full",1]] # 18404 sequences
+braker_aa.partial.filtered <- braker_aa[getName(braker_aa) %in% support.df[support.df$support == "partial",1]] # 13723 sequences
+braker_aa.no.filtered <- braker_aa[getName(braker_aa) %in% support.df[support.df$support == "no",1]] # 7014 sequences
+
+# write subsets
+write.fasta(sequences=braker_aa.filtered, 
+            names=names(braker_aa.filtered), 
+            file.out = "data/braker_analysis/external_evidence/polished_prot_rna/fixed_subsets/braker_all.faa")
+write.fasta(sequences=braker_aa.full.filtered, 
+            names=names(braker_aa.full.filtered), 
+            file.out = "data/braker_analysis/external_evidence/polished_prot_rna/fixed_subsets/full_support.faa")
+write.fasta(sequences=braker_aa.partial.filtered, 
+            names=names(braker_aa.partial.filtered), 
+            file.out = "data/braker_analysis/external_evidence/polished_prot_rna/fixed_subsets/partial_support.faa")
+write.fasta(sequences=braker_aa.no.filtered, 
+            names=names(braker_aa.no.filtered), 
+            file.out = "data/braker_analysis/external_evidence/polished_prot_rna/fixed_subsets/no_support.faa")
+```
+
+
+
+

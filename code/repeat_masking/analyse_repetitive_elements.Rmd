@@ -1,0 +1,54 @@
+---
+title: "Analyse_repetitive_elements"
+author: "twinkle1"
+date: "2023-06-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+knitr::opts_knit$set(root.dir = "/home/tom/Documents/projects/Ahyp_v2_2_publication/")
+```
+
+
+Prepare input file for processing using R:
+
+```{bash}
+# process build summary output
+tail -n +41 data/repeatmasking/repeatmasker/Ahypochondriacus_2.2_polished.capital.fasta.buildSummary | head -n -907 > data/repeatmasking/repeatmasker/Ahypochondriacus_2.2_polished.capital.fasta.buildSummary.tsv
+```
+
+
+Analyse repetitive element content and composition:
+
+```{r}
+# read in buildSummary
+buildSummary <- read_table(file = "data/repeatmasking/repeatmasker/Ahypochondriacus_2.2_polished.capital.fasta.buildSummary.tsv",
+                           col_names = c("repeat", "count", "length", "percent","drop"))
+buildSummary <- buildSummary[,1:4]
+
+# read in repeat classification
+new_TE_classification <- read_delim(file = "data/repeatmasking/reclassification/classified.updated.txt",
+                                    delim = "#",
+                                    col_names = c("TE_family", "classification"))
+
+# add indicator for low complexity and simple repeats
+buildSummary <- left_join(buildSummary, new_TE_classification, by = c("repeat" = "TE_family"))
+buildSummary[grep("rich", buildSummary$`repeat`),5] <- "Low complexity"
+buildSummary <- buildSummary %>%
+  mutate(classification = replace_na(classification, "Simple_repeat"))
+
+# create TE summary table
+summary_table <- buildSummary %>%
+  group_by(classification) %>%
+  summarise(total_length = sum(length),
+            percentage = round((total_length/403994491)*100, 2))
+
+summary_table %>%
+  summarize(sum_total_length = sum(total_length),
+            sum_percentage = sum(percentage))
+
+write.csv(summary_table, file = "data/repeatmasking/reclassification/reclassified.output.tbl",
+          quote = F, row.names = F)
+```

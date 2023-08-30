@@ -1,0 +1,271 @@
+---
+title: "Clouse_kallisto_gene_expression_quantification"
+author: "twinkle1"
+date: '2022-10-11'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(pheatmap)
+library(reshape2)
+library(scales)
+knitr::opts_knit$set(root.dir = "/home/tom/Documents/projects/Ahyp_v2_2_publication/")
+```
+
+After gene expression quantification using kallisto (of fastq files against the indexed transcriptome (!)), create plots to visualize the gene expression levels of different genes in different tissues.
+
+```{r}
+##### Setup, loading of data, preprocessing
+
+# vector of input directories
+indirs <- list.dirs(path = "data/gene_expression_quantification/kallisto_quant")
+indirs <- indirs[-1] # remove base directory
+indirs <- indirs[grep("index", indirs, invert = T)] # remove index directory
+
+# read in abundance file for each input directory
+abundances <- list()
+for (i in 1:length(indirs)){
+  abundances[[i]] <- read.table(file = paste0(indirs[i], "/abundance.tsv"), header = T)
+}
+
+# save as single dataframe with the tpm for each tissue, likely first in wide format
+tpm.df <- data.frame(abundances[[1]]$target_id,
+                     abundances[[1]]$tpm,
+                     abundances[[2]]$tpm,
+                     abundances[[3]]$tpm,
+                     abundances[[4]]$tpm,
+                     abundances[[5]]$tpm,
+                     abundances[[6]]$tpm,
+                     abundances[[7]]$tpm,
+                     abundances[[8]]$tpm)
+colnames(tpm.df) <- c("GeneID", gsub("data/gene_expression_quantification/kallisto_quant/", "", indirs))
+colnames(tpm.df) <- c("GeneID", "Cotyledones", "Flower", "Leaf", "Mature seed", "Root", "Stem", "Water-stressed", "Developing seed")
+
+# melt dataframe for plotting into long format:
+melted.df <- melt(tpm.df, id.vars = "GeneID")
+colnames(melted.df) <- c("GeneID", "tissue", "tpm")
+
+write_csv(tpm.df,
+          file = "data/gene_expression_quantification/kallisto_quant/all_tissue_expression.csv")
+write_csv(melted.df,
+          file = "data/gene_expression_quantification/kallisto_quant/all_tissue_expression_long.csv")
+```
+
+Create dataframe of the betalain genes and the myb genes which can be later used for plotting the gene expression levels for the respective genes.
+
+```{r}
+# load object with names of all betalain and flavonoid genes
+pathway_genes <- read.csv(file = "data/manual_sheets/color_pathway_genes.csv", header=T)
+
+betalain.genes <- pathway_genes %>%
+  filter(Pathway == "Betalain")
+
+flavonoid.genes <- pathway_genes %>%
+  filter(Pathway == "Flavonoid")
+
+# read in the myb genes and subset the betalain mybs
+myb_genes <- read.csv(file = "data/manual_sheets/MYB_with_subgroups.csv", header=T)
+#myb_genes <- read_csv(file = "data/annotation_analysis/myb_annotation/myb_stats.csv")
+colnames(myb_genes) <- c("Transcript_id", "Freq", "Gene_id", "Subgroup")
+
+```
+
+Plot expression levels in different tissues for the betalain genes of amaranth.
+
+```{r}
+# subset the melted tpm dataframe and plot gene expression
+betalain.df <- melted.df %>%
+  filter(gsub("\\..*", "", GeneID) %in% betalain.genes$Gene_id) %>%
+  mutate(joining = gsub("\\..*", "", GeneID))
+
+# join to obtain pathway gene names
+betalain_plotting <- left_join(x = betalain.df, y = betalain.genes, by = c("joining" = "Gene_id")) 
+betalain_plotting <- betalain_plotting %>%
+  select(GeneID, tissue, tpm, Gene) %>%
+  mutate(label = paste0(Gene, " (", GeneID, ")"))
+betalain_plotting$label <- factor(betalain_plotting$label, levels = c("AhCYP76AD2 (AHp023148.1)",
+                                                                      "AhCYP76AD5 (AHp000674.1)",
+                                                                      "AhDODAα1 (AHp023147.1)",
+                                                                      "AhDODAα2 (AHp010386.1)",
+                                                                      "AhBetanidin5GT (AHp001663.1)",
+                                                                      "AhBetanidin6GT (AHp005940.1)",
+                                                                      "AhcDOPA5GT (AHp007219.1)",
+                                                                      "AhMYB2 (AHp022773.1)",
+                                                                      "AhMYB2 (AHp022773.2)",
+                                                                      "AhMYB3 (AHp016530.1)",
+                                                                      "AhMYB4 (AHp016531.1)"))
+
+betalain_plotting$tissue <- factor(betalain_plotting$tissue, levels = c("Root",
+                                                                          "Cotyledones",
+                                                                          "Flower",
+                                                                          "Leaf",
+                                                                          "Stem",
+                                                                          "Developing seed",
+                                                                          "Mature seed",
+                                                                          "Water-stressed"))
+
+
+# new plotting of betalain gene expression per tissue
+ggplot(data = betalain_plotting) +
+  geom_tile(aes(x = tissue, y = label, fill = tpm + 1)) +
+  geom_text(aes(x = tissue, y = label, label = sprintf("%0.2f", round(tpm, digits = 2))),
+            size = 3.5) +
+  scale_fill_distiller(palette = "RdYlBu", trans = "log10", labels = comma) +
+  scale_y_discrete(limits = rev) +
+  #scale_fill_viridis_c(alpha = 0.7, trans = "log10") +
+  labs(fill = "TPM") +
+  theme_classic() +
+  expand_limits(fill = 600) +
+  theme(text = element_text(size=22),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+ggsave(filename = "plots/gene_expression_quantification/betalain_expression.png", width = 10, height = 7,
+       dpi = 400)
+
+
+```
+
+
+Recreate betalain gene expression inference for the MYB transcription factor genes, could also try clustering the genes based on gene expression.
+
+```{r}
+# subset the expression dataframe based on MYB transcription factor information
+myb.df <- melted.df %>%
+  filter(GeneID %in% myb_genes$Transcript_id)
+
+# join the myb.df object with the subgroup information of the myb_genes dataframe
+myb.df <- left_join(myb.df, myb_genes, by = c("GeneID" = "Transcript_id"))
+
+# create label for plot
+label <- paste0(myb_genes$Transcript_id, " (", myb_genes$Subgroup, ")")
+
+# replace transcript id for particular genes
+label[52] <- "AmMYBl1.1 (S5)"
+label[62] <- "AhMYB3.1 (BvMYB1-like)"
+label[63] <- "AhMYB4.1 (BvMYB1-like)"
+label[93] <- "AhMYB2.1 (BvMYB1-like)"
+label[94] <- "AhMYB2.2 (BvMYB1-like)"
+
+# create matrices for the pheatmap function
+myb.mat_label <- matrix(data = round(myb.df$tpm, digits = 2), 
+                  ncol = 8,
+                  byrow = F)
+myb.mat <- matrix(data = log10(myb.df$tpm+1), 
+                  ncol = 8,
+                  byrow = F)
+rownames(myb.mat) <- label
+colnames(myb.mat) <- unique(myb.df$tissue)
+rownames(myb.mat_label) <- label
+colnames(myb.mat_label) <- unique(myb.df$tissue)
+
+# define column order
+col_order <- c("Root",
+          "Cotyledones",
+          "Flower",
+          "Leaf",
+          "Stem",
+          "Developing seed",
+          "Mature seed",
+          "Water-stressed")
+
+# change column order
+myb.mat <- myb.mat[,col_order]
+myb.mat_label <- myb.mat_label[,col_order]
+
+# create clustered heatmap
+pheatmap(mat = myb.mat,
+         cluster_rows = T,
+         cluster_cols = F,
+         angle_col = 45,
+         filename = "plots/gene_expression_quantification/myb_expression.png",
+         width = 10,
+         height = 15,
+         display_numbers = myb.mat_label,
+         number_color = "black",
+         fontsize_number = 9,
+         legend_breaks = c(0,1,2),
+         legend_labels = c(0, 10^1, 10^2))
+
+```
+
+
+Also check the flavonoid pathway for expression differences, huge expression perhaps not expected since the plant produces white seeds:
+
+```{r}
+# flavonoid pathway plot
+# subset the melted tpm dataframe and plot gene expression
+flavonoid.df <- melted.df %>%
+  filter(gsub("\\..*", "", GeneID) %in% flavonoid.genes$Gene_id) %>%
+  mutate(joining = gsub("\\..*", "", GeneID))
+
+# join to obtain pathway gene names
+flavonoid_plotting <- left_join(x = flavonoid.df, y = flavonoid.genes, by = c("joining" = "Gene_id")) 
+flavonoid_plotting <- flavonoid_plotting %>%
+  select(GeneID, tissue, tpm, Gene) %>%
+  mutate(label = paste0(Gene, " (", GeneID, ")"))
+
+flavonoid_plotting$tissue <- factor(flavonoid_plotting$tissue, levels = c("Root",
+                                                                          "Cotyledones",
+                                                                          "Flower",
+                                                                          "Leaf",
+                                                                          "Stem",
+                                                                          "Developing seed",
+                                                                          "Mature seed",
+                                                                          "Water-stressed"))
+
+flavonoid_plotting$label <- factor(flavonoid_plotting$label, levels = c("PAL_1 (AHp012752.1)",
+                                                                         "PAL_2 (AHp021980.1)",
+                                                                         "C4H_1 (AHp013217.1)",
+                                                                         "C4H_1 (AHp013217.2)",
+                                                                         "C4H_2 (AHp022384.1)",
+                                                                         "C4H_3 (AHp022382.1)",
+                                                                         "C4H_3 (AHp022382.2)",
+                                                                         "4CL_1 (AHp014409.1)",
+                                                                         "4CL_2 (AHp020962.1)",
+                                                                         "CHS (AHp004305.1)",
+                                                                         "CHS (AHp004305.2)",
+                                                                         "CHI1 (AHp009962.1)",
+                                                                         "F3-H_1 (AHp017497.1)",
+                                                                         "F3-H_2 (AHp022122.1)",
+                                                                         "F3-H_3 (AHp003152.1)",
+                                                                         "F3-H_3 (AHp003152.2)",
+                                                                         "F3-H_4 (AHp022120.1)",
+                                                                         "F3-H_5 (AHp022123.1)",
+                                                                         "DFR (AHp009303.1)",
+                                                                         "F3H (AHp006454.1)",
+                                                                         "FLS (AHp008991.1)",
+                                                                         "FLS (AHp008991.2)",
+                                                                         "LAR (AHp017409.1)",
+                                                                         "ANR (AHp001635.1)"))
+
+
+# new plotting of flavonoid gene expression per tissue
+ggplot(data = flavonoid_plotting) +
+  geom_tile(aes(x = tissue, y = label, fill = tpm+1)) +
+  geom_text(aes(x = tissue, y = label, label = sprintf("%0.2f", round(tpm, digits = 2))),
+            size = 3.5) +
+  scale_fill_distiller(palette = "RdYlBu", trans = "log10") +
+  scale_y_discrete(limits = rev) +
+  #scale_fill_viridis_c(alpha = 0.7, trans = "log10") +
+  labs(fill = "TPM") +
+  theme_classic() +
+  expand_limits(fill = 600) +
+  theme(text = element_text(size=22),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust=1))
+ggsave(filename = "plots/gene_expression_quantification/flavonoid_pathway_expression.png", width = 10, height = 10)
+#ggsave(filename = "plots/gene_expression_quantification/flavonoid_pathway_expression.png", width = 10, height = 12)
+```
+
+
+
+
+
+
+
+
+

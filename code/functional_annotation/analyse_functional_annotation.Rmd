@@ -1,0 +1,83 @@
+---
+title: "analyse_functional_annotation"
+author: "twinkle1"
+date: "2023-06-19"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggVennDiagram)
+knitr::opts_knit$set(root.dir = "/home/tom/Documents/projects/Ahyp_v2_2_publication/")
+```
+
+Prepare input files:
+
+```{bash}
+mkdir data/functional_annotation/analysis
+
+# prepare interproscan annotations (Pfam, PANTHER and CDD)
+awk '{if (($4 == "Pfam") || ($4 == "PANTHER") || ($4 == "CDD")) {print $1}}' data/functional_annotation/interproscan/Ahypochondriacus_2.2_polished_corrected.prot.fasta.tsv | sort | uniq > data/functional_annotation/analysis/interpro_genes.txt
+# prepare eggnog annotation
+tail -n +6 data/functional_annotation/eggnog_mapper/MM_8wexw920.emapper.annotations.tsv | head -n -3 | awk '{print $1}' > data/functional_annotation/analysis/eggnog_genes.txt
+# prepare mercator annotations
+grep ">" data/functional_annotation/mercator_v4/Ahyp2.fa | grep -v "not classified" | sed 's/ .*//' | sed 's/>//' > data/functional_annotation/analysis/mercator_genes.txt
+```
+
+Load in gene names and analyse overlap:
+
+```{r}
+# read in annotation gene list
+annotation_reader <- function(file, source){
+  annot <- read_table(file = file,
+                      col_names = "transcript_id")
+  # add source and geneid
+  annot <- annot %>%
+    mutate(gene_id = substr(transcript_id, 1, 9),
+           source = source)
+  return(annot)
+}
+
+# load in genes
+ips_genes <- annotation_reader(file = "data/functional_annotation/analysis/interpro_genes.txt",
+                               source = "Interproscan")
+eggnog_genes <- annotation_reader(file = "data/functional_annotation/analysis/eggnog_genes.txt",
+                               source = "eggNOG")
+mercator_genes <- annotation_reader(file = "data/functional_annotation/analysis/mercator_genes.txt",
+                               source = "Mercator")
+
+# create input list
+gene_list <- list(Interproscan = unique(ips_genes$gene_id),
+                  eggNOG_mapper = unique(eggnog_genes$gene_id),
+                  Mercator = unique(mercator_genes$gene_id))
+
+# plot Venn Diagram
+p1 <- ggVennDiagram(gene_list,
+                    label = "count") +
+  scale_x_continuous(expand = expansion(mult = .15)) +
+  scale_fill_distiller(palette = "RdBu") +
+  labs(fill = "Number of genes")
+p1
+
+ggsave(filename = "plots/functional_annotation_venn.png",
+       height = 5,
+       width = 7,
+       bg = "white",
+       dpi = 400)
+
+
+getVennOverlap <- function(lsvenn = list(A = sort(sample(LETTERS, 15)),
+                                     B = sort(sample(LETTERS, 15)),
+                                     C = sort(sample(LETTERS, 15)),
+                                     D = sort(sample(LETTERS, 15)))
+                           ) {
+  
+  ItemsList <- gplots::venn(lsvenn, show.plot = FALSE)
+  print(lengths(attributes(ItemsList)$intersections))
+  #return(attributes(ItemsList)$intersections)
+}
+
+sum(getVennOverlap(lsvenn = gene_list))
+```
+
