@@ -152,9 +152,9 @@ Subset the vcf file and extract the allele frequencies using vcftools
 
 ```{bash}
 # to extract the format field
-vcftools --gzvcf data/annotation_analysis/snpEff/bsa_sterility_color/gatk_filter_maxmissing05_biallelic.vcf.gz --bed data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16.bed --indv AM_00331_gf --indv AM_00331_rf --indv AM_00332_gl --indv AM_00332_rl --extract-FORMAT-info AD --out data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16
+vcftools --gzvcf data/BSA/wgs/vcf/gatk_filter_maxmissing05_biallelic.vcf.gz --bed data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16.bed --indv AM_00331_gf --indv AM_00331_rf --indv AM_00332_gl --indv AM_00332_rl --extract-FORMAT-info AD --out data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16
 # also subset the vcf file to include only the variants around the betalain genes
-vcftools --gzvcf data/annotation_analysis/snpEff/bsa_sterility_color/gatk_filter_maxmissing05_biallelic.vcf.gz --bed data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16.bed --indv AM_00331_gf --indv AM_00331_rf --indv AM_00332_gl --indv AM_00332_rl --recode --recode-INFO-all --out data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16
+vcftools --gzvcf data/BSA/wgs/vcf/gatk_filter_maxmissing05_biallelic.vcf.gz --bed data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16.bed --indv AM_00331_gf --indv AM_00331_rf --indv AM_00332_gl --indv AM_00332_rl --recode --recode-INFO-all --out data/annotation_analysis/snpEff/bsa_sterility_color/analysis/betalain_chr16
 ```
 
 
@@ -379,37 +379,7 @@ ggsave(filename = "plots/CYP76AD_AHp023148_bsa_snpeff.png",
 ```
 
 
-Plot for DODA1:
-
-```{r}
-# plot for one gene
-# filter all homozygous reference variants
-dat <- joined.df %>% 
-  filter(ANN....GENEID == "AHp023147") %>%
-  filter(AM00332_gl_alt != 0)
-
-
-
-# filter to only include specific gene
-dat.filtered <- filter_variants(variants = joined.df, 
-                  gene = "AHp023147",
-                  bulk1_ref = "AM00332_gl_ref",
-                  bulk1_alt = "AM00332_gl_alt",
-                  bulk2_ref = "AM00332_rl_ref",
-                  bulk2_alt = "AM00332_rl_alt")
-
-
-
-AM00332_DODA1 <- plot_bulk_comparison(annotation = betalain_chr16.gtf,
-                                        trans_id = "AHp023147.1",
-                                        filtered_variants = dat.filtered)
-
-
-# increase the size of the annotated transcript, also create the legend as its own plot and add with cowplot
-AM00332_DODA1
-```
-
-Write a function to make the same plot for all of the betalain pathway genes
+Function to make the same plot for all of the betalain pathway genes
 
 ```{r}
 plot_all_genes <- function(gene_id, transcript_id, bulk){

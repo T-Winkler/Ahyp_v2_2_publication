@@ -64,27 +64,21 @@ bsa_analysis <- function(rawData,HighBulk,LowBulk,Chroms,nhigh,nlow){
   return(df_filt)
 }
 
-AM_00332_leaf_green_red <- bsa_analysis(rawData = '../data/bulk_snps05.table',
+AM_00332_leaf_green_red <- bsa_analysis(rawData = 'data/BSA/wgs/vcf/bulk_snps05.table',
                                         HighBulk = "AM_00332_gl",
                                         LowBulk = "AM_00332_rl",
                                         Chroms = paste0(rep("Scaffold_",
                                                             16),1:16),
                                         nhigh=80,
                                         nlow=80)
-AM_00331_flower_red_green <- bsa_analysis(rawData = '../data/bulk_snps05.table',
+AM_00331_flower_red_green <- bsa_analysis(rawData = 'data/BSA/wgs/vcf/bulk_snps05.table',
                                           HighBulk = "AM_00331_rf",
                                           LowBulk = "AM_00331_gf",
                                           Chroms = paste0(rep("Scaffold_",
                                                               16),1:16),
                                           nhigh = 68,
                                           nlow = 68)
-AM_00332_gleaf_AM_00331_rf <- bsa_analysis(rawData = '../data/bulk_snps05.table',
-                                           HighBulk = "AM_00332_gl",
-                                           LowBulk = "AM_00331_rf",
-                                           Chroms = paste0(rep("Scaffold_",
-                                                               16),1:16),
-                                           nhigh = 44,
-                                           nlow = 68)
+
 
 # plot all results
 # leaf
@@ -293,7 +287,6 @@ plotGqtl1 <- function(Gresults,chr,genes){
   out
 }
 
-
 # plot all results
 plot_AM_00332_leaf_green_red <- plotGresults1(AM_00332_leaf_green_red,
                                              betalain_genes = betalain_genes)
@@ -363,99 +356,7 @@ ggsave(filename = "plots/paper_myb_combined_alignment.png",
        bg = "white")
 
 
-### add creation of alternative leaf and flower figures with genes:
-plotGqtl1 <- function(Gresults,chr,genes){
-  
-  qval <- Gresults %>% 
-    filter(qvalue<=0.01) 
-  #qval <- min(qval$Gprime)
-  qval <- 3
-  my_qtl <- getQTLTable(SNPset = Gresults, alpha = 0.01,export = F)
-  
-  p1 <- ggplot() +
-    geom_line(data=filter(Gresults,CHROM==chr),aes(POS/1e6,Gprime),size=2) +
-    labs(x= 'Position (Mb)',y= "G' value") +
-    scale_x_continuous(breaks = c(0,5,10,15,20,30))+
-    scale_y_continuous(breaks = c(0,2,4,8)) +
-    geom_hline(data=data.frame(yint=qval),
-               aes(yintercept =yint, linetype ='dashed', color=alpha('red',0.6)),
-               size = 2) +
-    geom_vline(aes(xintercept = 5231549/1e6), color = "black") +
-    geom_vline(aes(xintercept = 5305973/1e6), color = "black") +
-    facet_grid(.~CHROM,space = 'free_x',scales='free_x') +
-    ylim(0,8) +
-    theme(panel.spacing.x=unit(0.25, "lines")) +
-    # theme( strip.background = element_rect(fill = alpha('lightblue',0.2)),
-    #        strip.text = element_text(size=30)) +
-    theme( strip.background = element_blank(),
-           strip.text = element_blank()) +
-    theme(legend.position="none",
-          axis.text.y = element_text(size = 30),
-          #plot.margin = unit(c(0, 0, 0, 0), "cm"),
-          axis.text.x = element_text(size=20),
-          axis.title.x = element_text(size=40),
-          #axis.title.y = element_blank(),
-          axis.title.y = element_text(color = "black", size = 35),
-          axis.line = element_line(linewidth = 2),
-          axis.ticks = element_line(linewidth = 1.5),
-          axis.ticks.length = unit(.25, "cm"))
-  
 
-    p2 <- ggplot() +
-      geom_gene_arrow(data=filter(genes, 
-                                  CHROM==chr, 
-                                  type == "transcript",
-                                  attributes == "ID=AHp023147.1;geneID=AHp023147" | attributes == "ID=AHp023148.1;geneID=AHp023148") %>% droplevels(),
-                      aes(xmin = start, 
-                          xmax = end, 
-                          y = "chr16", 
-                          fill = attributes, 
-                          forward = c(F,T)),
-                      size = 1.5,
-                      color = "black",
-                      arrowhead_height = unit(12, "mm"), 
-                      arrowhead_width = unit(6, "mm"), 
-                      arrow_body_height = grid::unit(6, "mm")) +
-      geom_text(aes(x = c(5246000,5290000),
-                    y = "chr16",
-                    label = c("AhDODAα1","AhCYP76AD2")),
-                size = 11,
-                nudge_y = 2.5) +
-      coord_cartesian(ylim = c(0,4)) +
-      scale_x_continuous(breaks = c(5250000, 5275000)) +
-      theme(legend.position = "none",
-            plot.margin = unit(c(0, 2, 0.5, 2), "cm"),
-            axis.line = element_line(linewidth = 2),
-            axis.ticks = element_line(linewidth = 1.5),
-            axis.text.x = element_text(size=20),
-            panel.grid.major.y = ggplot2::element_line(colour = "grey", 
-                                                       linewidth = 1),
-            #axis.title.x = element_text(size=40),
-            axis.ticks.length = unit(.25, "cm"),
-            axis.title.y = element_blank(),
-            axis.title.x = element_blank(),
-            axis.line.y = element_blank(),
-            axis.ticks.y = element_blank(),
-            axis.text.y = element_blank()) +
-      scale_fill_manual(values = c("chocolate2","cyan3",'red'))
-    
-    # combine plots:
-    out <- plot_grid(p2,p1,
-                     nrow = 2,
-                     rel_heights = c(0.3,0.7))
-
-    out
-}
-
-plotleaf16 <- plotGqtl1(AM_00332_leaf_green_red,
-                        genes = betalain_genes,
-                        chr = 16)
-
-ggsave(filename = "test.png",
-       plot = plotleaf16,
-       bg = "white",
-       width = 10,
-       height = 10)
 
 
 

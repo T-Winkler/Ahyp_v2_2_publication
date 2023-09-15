@@ -32,4 +32,4 @@ java -jar $TRIMMOMATIC/trimmomatic.jar PE \
 	"${FILES["${SLURM_ARRAY_TASK_ID}"]}" \
 	"${FILES["${SLURM_ARRAY_TASK_ID}"]/R1.fastq.gz/R2.fastq.gz}" \
 	-baseout "${FILES["${SLURM_ARRAY_TASK_ID}"]/R1.fastq.gz/trimmed.fq.gz}" \
-	ILLUMINACLIP:data/BSA/RNAseq/adapters/custom_adapters.fa:2:30:10
+	ILLUMINACLIP:raw_data/BSA_rnaseq/adapters/custom_adapters.fa:2:30:10
