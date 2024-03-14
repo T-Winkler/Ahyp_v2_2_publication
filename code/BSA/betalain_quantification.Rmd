@@ -1,0 +1,846 @@
+---
+title: "Betalain_quantification"
+author: "twinkle1"
+date: "2023-11-15"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(readxl)
+library(reshape2)
+library(patchwork)
+library(agricolae)
+library(ggpubr)
+library(cowplot)
+library(ggbeeswarm)
+```
+
+Create output directory for plots
+
+```{bash}
+mkdir ../../plots/betalain_quantification
+```
+
+
+Read in measured data
+
+```{r}
+# read in data
+betalain_quantification <- read_excel(path = "../../raw_data/betalain_quantification/Betalain_quantification_summary.xlsx",
+                                      sheet = "Photometric_quantification")
+
+# normalize to the same input weight
+#betalain_quantification <- betalain_quantification %>%
+#  mutate(A536 = ifelse(tissue == "leaf", A536 * (0.0167/0.037), A536),
+#         A480 = ifelse(tissue == "leaf", A480 * (0.0167/0.037), A480))
+
+# correct for betacyanin absorption at 480 nm
+betalain_quantification <- betalain_quantification %>%
+  mutate(A480 = A480 - (A536/3.1))
+
+
+
+# calculate the mass of betalains in our samples
+betalain_quantification <- betalain_quantification %>%
+  mutate(cBetacyanin = (A536/60000)*2, # dilution of factor 2 through added MetOH
+         nBetacyanin = cBetacyanin * 0.000275,
+         mBetacyanin = nBetacyanin * 726.6, # molar mass amaranthin
+         factor_to_1g = 1/fresh_weight,
+         mBetacyanin_in_1g = mBetacyanin * factor_to_1g,
+         mBetacyanin_in_1g_in_mg = mBetacyanin_in_1g * 1000) %>%
+  mutate(mBetacyanin_in_1g_in_mg = mBetacyanin_in_1g_in_mg * cuvette_dilution) # correct for dilution in cuvette
+
+head(betalain_quantification)
+
+betalain_quantification <- betalain_quantification %>%
+  mutate(cBetaxanthin = (A480/48000)*2,
+         nBetaxanthin = cBetaxanthin * 0.000275,
+         mBetaxanthin = nBetaxanthin * 324.333, # vulgaxanthin IV
+         factor_to_1g = 1/fresh_weight,
+         mBetaxanthin_in_1g = mBetaxanthin * factor_to_1g,
+         mBetaxanthin_in_1g_in_mg = mBetaxanthin_in_1g * 1000) %>%
+  mutate(mBetaxanthin_in_1g_in_mg = mBetaxanthin_in_1g_in_mg * cuvette_dilution) %>%
+  select(tube_nr, line, batch, individual, accession, tissue, mBetacyanin_in_1g_in_mg, mBetaxanthin_in_1g_in_mg)
+
+# exclude sample due to irregular betacyanin content
+betalain_quantification <- betalain_quantification %>%
+  filter(tube_nr != 65)
+
+
+# melt dataframe
+melted_quant <- melt(betalain_quantification,
+                     id.vars = c("tube_nr", "line", "batch", "individual", "accession", "tissue"))
+colnames(melted_quant)[7:8] <- c("metabolite", "content")
+
+# add unique identifier to each individual of different lines from some PI number
+melted_quant <- melted_quant %>%
+  mutate(uniq_ind = paste0(line, "_", batch, "_", individual),
+         accession = factor(accession, levels = c("PI 576485","PI 538323","PI 686465")),
+         tissue = as.factor(tissue),
+         batch = as.factor(batch))
+
+# mean betalain content
+mean_expression <- melted_quant %>%
+  group_by(accession, tissue, metabolite) %>%
+  summarise(mean_content = mean(content))
+```
+
+Conduct statistical analysis
+
+```{r}
+# conduct anova between BSA parents
+betalains_leaf <- betalain_quantification %>%
+  filter(tissue == "leaf")
+betalains_flower <- betalain_quantification %>%
+  filter(tissue == "flower")
+
+# anova for leaf betacyanin content
+leaf_bc_aov <- aov(mBetacyanin_in_1g_in_mg ~ accession * batch, data = betalains_leaf)
+summary(leaf_bc_aov)
+# tukey post hoc test
+leaf_bc_post_hoc <- HSD.test(leaf_bc_aov, trt = "accession")
+leaf_bc_post_hoc
+# extract groups for leaf
+leaf_bc_groups <- leaf_bc_post_hoc$groups
+leaf_bc_groups$factors <- factor(rownames(leaf_bc_groups), levels = c("PI 576485","PI 538323","PI 686465"))
+
+
+# anova for leaf betaxanthin content
+leaf_bx_aov <- aov(mBetaxanthin_in_1g_in_mg ~ accession * batch, data = betalains_leaf)
+summary(leaf_bx_aov)
+# tukey post hoc test
+#leaf_bx_post_hoc <- HSD.test(leaf_bx_aov, trt = "batch")
+#leaf_bx_post_hoc
+# extract groups for leaf
+#leaf_bx_groups <- leaf_bx_post_hoc$groups
+#leaf_bx_groups$factors <- as.factor(rownames(leaf_bx_groups))
+
+
+# anova for flower betacyanin content
+flower_bc_aov <- aov(mBetacyanin_in_1g_in_mg ~ accession * batch, data = betalains_flower)
+summary(flower_bc_aov)
+# tukey post hoc test
+flower_bc_post_hoc <- HSD.test(flower_bc_aov, trt = "accession")
+flower_bc_post_hoc
+# extract groups for flower
+flower_bc_groups <- flower_bc_post_hoc$groups
+flower_bc_groups$factors <- factor(rownames(flower_bc_groups), levels = c("PI 576485","PI 538323","PI 686465"))
+
+
+# anova for flower betaxanthin content
+flower_bx_aov <- aov(mBetaxanthin_in_1g_in_mg ~ accession * batch, data = betalains_flower)
+summary(flower_bx_aov)
+# tukey post hoc test
+flower_bx_post_hoc <- HSD.test(flower_bx_aov, trt = "accession")
+flower_bx_post_hoc
+# extract groups for flower
+flower_bx_groups <- flower_bx_post_hoc$groups
+flower_bx_groups$factors <- factor(rownames(flower_bx_groups), levels = c("PI 576485","PI 538323","PI 686465"))
+```
+
+```{r}
+# from: https://stackoverflow.com/questions/54672468/ggplot2-how-to-nudge-the-position-of-points-in-geom-beeswarm
+position_nudge_any <- function(x = 0, y = 0, position) {
+  ggproto(NULL, PositionNudgeAny,
+          nudge = ggplot2::position_nudge(x, y),
+          position = position
+  )
+}
+
+
+#' Internal class doing the actual nudging on top of the other operation
+#' @keywords internal
+PositionNudgeAny <- ggplot2::ggproto("PositionNudgeAny", ggplot2::Position,
+  nudge = NULL,
+  nudge_params = NULL,
+  position = NULL,
+  position_params = NULL,
+
+  setup_params = function(self, data) {
+   list(nudge = self$nudge,
+        nudge_params = self$nudge$setup_params(data),
+        position = self$position,
+        position_params = self$position$setup_params(data))
+  },
+
+  setup_data = function(self, data, params) {
+   data <- params$position$setup_data(data, params$position_params)
+   params$nudge$setup_data(data, params$nudge_params)
+  },
+
+  compute_layer = function(self, data, params, layout) {
+   data <- params$position$compute_layer(data, params$position_params, layout)
+   params$nudge$compute_layer(data, params$nudge_params, layout)
+  }
+)
+```
+
+Plot data
+
+```{r}
+# plot data
+# plot betalain quantification from leaf
+p_leaf <- ggplot(data = melted_quant %>% filter(tissue == "leaf")) +
+  # geom_boxplot(aes(x = accession,
+  #                y = content,
+  #                fill = metabolite),
+  #              outlier.shape = NA,
+  #            color = "black",
+  #            size = 0.4) +
+  geom_point(data = melted_quant %>% filter(tissue == "leaf", metabolite == "mBetacyanin_in_1g_in_mg"),
+             aes(x = accession, y = content),
+             size = 1.8,
+             color = "red3",
+             position = position_nudge_any(x = -0.2,
+                                           y = 0,
+                                           position_beeswarm(priority = "random",
+                                                             cex = 1.5))) +
+  geom_point(data = melted_quant %>% filter(tissue == "leaf", metabolite == "mBetaxanthin_in_1g_in_mg"),
+             aes(x = accession, y = content),
+             color = "#F0B327",
+             size = 1.8,
+             position = position_nudge_any(x = 0.2,
+                                           y = 0,
+                                           position_beeswarm(priority = "random",
+                                                             cex = 1.5))) +
+  geom_segment(data = mean_expression %>% filter(tissue == "leaf", metabolite == "mBetacyanin_in_1g_in_mg"),
+               aes(x = as.numeric(accession) - 0.35,
+                   xend = as.numeric(accession) - 0.05,
+                   y = mean_content,
+                   yend = mean_content),
+               linewidth = 0.9,
+               color = "black") +
+    geom_segment(data = mean_expression %>% filter(tissue == "leaf", metabolite == "mBetaxanthin_in_1g_in_mg"),
+               aes(x = as.numeric(accession) + 0.05,
+                   xend = as.numeric(accession) + 0.35,
+                   y = mean_content,
+                   yend = mean_content),
+               linewidth = 0.9,
+               color = "black") +
+  geom_text(data = leaf_bc_groups, 
+          aes(x = as.numeric(factors) - 0.19,
+              y = 1.15,
+              label = groups), 
+          size=8, 
+          inherit.aes = F,
+          color = "red3") +  
+  scale_color_manual(values = c( "red3","#F0B327"), labels = c("Betacyanins", "Betaxanthins")) +
+  #scale_fill_manual(values = alpha(c("red3","#F0B327"), 0.2), labels = c("Betacyanins", "Betaxanthins")) +
+  scale_fill_manual(values = c("red3","#F0B327"), labels = c("Betacyanins", "Betaxanthins")) +
+  coord_cartesian(ylim = c(0, 1.2)) +
+  labs(y = "Betalain content\n [mg/g]", color = "Wavelength") +
+  theme_classic() +
+    theme(text = element_text(size = 24),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 15),
+        axis.text.y = element_text(size = 14, color = "black"),
+        legend.title = element_blank(),
+        plot.margin = unit(c(0,0,0,0), "cm"),
+        #axis.text.x = element_text(size = 13, angle = 45, vjust = 1, hjust=1)) +
+        axis.text.x = element_blank()) +
+  guides(color = guide_legend(override.aes = list(size = 4)))
+
+p_leaf
+
+# plot betalain quantification from flower
+p_flower <- ggplot(data = melted_quant %>% filter(tissue == "flower")) +
+  # geom_boxplot(aes(x = accession, 
+  #                y = content, 
+  #                fill = metabolite),
+  #            color = "black",
+  #            #color = "red4",
+  #            size = 0.4) +
+  geom_point(data = melted_quant %>% filter(tissue == "flower", metabolite == "mBetacyanin_in_1g_in_mg"),
+             aes(x = accession, y = content),
+             size = 1.8,
+             color = "red3",
+             position = position_nudge_any(x = -0.2,
+                                           y = 0,
+                                           position_beeswarm(priority = "random",
+                                                             cex = 1.2))) +
+  geom_point(data = melted_quant %>% filter(tissue == "flower", metabolite == "mBetaxanthin_in_1g_in_mg"),
+             aes(x = accession, y = content),
+             color = "#F0B327",
+             size = 1.8,
+             position = position_nudge_any(x = 0.2,
+                                           y = 0,
+                                           position_beeswarm(priority = "random",
+                                                             cex = 1.2))) +
+  geom_segment(data = mean_expression %>% filter(tissue == "flower", metabolite == "mBetacyanin_in_1g_in_mg"),
+               aes(x = as.numeric(accession) - 0.35,
+                   xend = as.numeric(accession) - 0.05,
+                   y = mean_content,
+                   yend = mean_content),
+               linewidth = 0.9,
+               color = "black") +
+    geom_segment(data = mean_expression %>% filter(tissue == "flower", metabolite == "mBetaxanthin_in_1g_in_mg"),
+               aes(x = as.numeric(accession) + 0.05,
+                   xend = as.numeric(accession) + 0.35,
+                   y = mean_content,
+                   yend = mean_content),
+               linewidth = 0.9,
+               color = "black") +
+  geom_text(data = flower_bc_groups, 
+          aes(x = as.numeric(factors) - 0.19,
+              y = 1.15,
+              label = groups), 
+          size=8, 
+          inherit.aes = F,
+          color = "red3") +  
+  geom_text(data = flower_bx_groups, 
+          aes(x = as.numeric(factors) + 0.19,
+              y = 1.15,
+              label = groups), 
+          size=8, 
+          inherit.aes = F,
+          color = "#F0B327") +    
+  scale_fill_manual(values = c( "red3","#F0B327"), labels = c("Betacyanins", "Betaxanthins")) +
+  coord_cartesian(ylim = c(0, 1.2)) +
+  labs(y = "Betalain content\n [mg/g]", color = "Wavelength") +
+  theme_classic() +
+  theme(text = element_text(size = 24),
+        axis.title.x = element_blank(),
+        #axis.title.y = element_text(size = 17),
+        legend.title = element_blank(),
+        plot.margin = unit(c(0,0,0,0), "cm"),
+        #axis.text.x = element_text(size = 13, angle = 45, vjust = 1, hjust=1)) +
+        axis.text.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank())
+
+p_flower
+
+patchplot_betalains <- p_flower / p_leaf +
+  plot_annotation(tag_levels = "A") +
+  plot_layout(guides = "collect", heights = c(1,1)) &
+  theme(legend.position = "bottom",
+        legend.direction = "vertical",
+        #plot.margin = unit(c(0,0,0,0.1), "cm"),
+        plot.tag = element_text(vjust = 2, size = 24))
+
+patchplot_betalains
+
+ggsave(filename = "../../plots/betalain_quantification/betalain_quant_photometric_content.png",
+       plot = patchplot_betalains,
+       bg = "white",
+       dpi = 450,
+       width = 7,
+       height = 9)
+```
+
+
+HPLC quantification
+
+```{r}
+# hplc quantification
+hplc_quantification <- read_excel(path = "../../raw_data/betalain_quantification/Betalain_quantification_summary.xlsx",
+                                      sheet = "LC-MS_quantification")
+
+# get blank measurements
+blank_amaranthin <- hplc_quantification[grep("Blank", hplc_quantification$sample_name), "Amaranthin_ratio"]
+blank_betanin <- hplc_quantification[grep("Blank", hplc_quantification$sample_name), "Betanin_ratio"] # not detected
+blank_betalamic_acid <- hplc_quantification[grep("Blank", hplc_quantification$sample_name), "Betalamic_acid_ratio"] # not detected
+blank_vulgaxanthin_IV <- hplc_quantification[grep("Blank", hplc_quantification$sample_name), "Vulgaxanthin_IV_ratio"] # not detected
+
+# join with other table
+hplc_quant_joined <- inner_join(hplc_quantification, betalain_quantification) %>%
+  mutate_all(~replace(., is.na(.), 0)) %>%
+  mutate(uniq_ind = paste0(accession, "_", line, "_", individual))
+
+# adjust measurements for different input weights
+hplc_quant_joined <- hplc_quant_joined %>%
+  mutate(Amaranthin_ratio = ifelse(tissue == "leaf", Amaranthin_ratio * (0.0167/0.037), Amaranthin_ratio),
+         Betanin_ratio = ifelse(tissue == "leaf", Betanin_ratio * (0.0167/0.037), Betanin_ratio),
+         Betalamic_ratio = ifelse(tissue == "leaf", Betalamic_acid_ratio * (0.0167/0.037), Betalamic_acid_ratio),
+         Vulgaxanthin_IV_ratio = ifelse(tissue == "leaf", Vulgaxanthin_IV_ratio * (0.0167/0.037), Vulgaxanthin_IV_ratio))
+
+# subtract blank
+hplc_quant_normalised <- hplc_quant_joined %>% # replace NA with 0
+  mutate(Amaranthin_ratio = Amaranthin_ratio - blank_amaranthin[[1]],
+         accession = factor(accession, levels = c("PI 576485","PI 538323","PI 686465"))) # subtract blank from actual measurements
+
+# replace negative values with 0
+hplc_quant_normalised[hplc_quant_normalised < 0] <- 0
+
+
+# AUC means
+hplc_AUC_means <- hplc_quant_normalised %>%
+  group_by(tissue, accession) %>%
+  summarise(amaranthin_mean = mean(Amaranthin_ratio),
+            betanin_mean = mean(Betanin_ratio),
+            betalamic_acid_mean = mean(Betalamic_acid_ratio),
+            vulgaxanthin_IV_mean = mean(Vulgaxanthin_IV_ratio)) %>%
+  unique()
+
+
+```
+
+
+Statistical analysis
+
+```{r}
+# conduct anova between BSA parents
+hplc_leaf <- hplc_quant_normalised %>%
+  filter(tissue == "leaf")
+hplc_flower <- hplc_quant_normalised %>%
+  filter(tissue == "flower")
+
+
+anova_and_tukey <- function(data, column){
+  out_list <- list()
+  # anova
+  aov_out <- aov(reformulate("accession", response = column), data = data)
+  out_list[[1]] <- aov_out
+  # tukey post hoc
+  post_hoc_out <- HSD.test(aov_out, trt = "accession")
+  out_list[[2]] <- post_hoc_out
+  # extract groups
+  groups_out <- post_hoc_out$groups
+  groups_out$factors <- factor(rownames(groups_out), levels = c("PI 576485","PI 538323","PI 686465"))
+  out_list[[3]] <- groups_out
+  return(out_list)
+}
+
+# amaranthin leaf
+amaranthin_leaf <- anova_and_tukey(data = hplc_leaf, column = "Amaranthin_ratio")
+summary(amaranthin_leaf[[1]])
+amaranthin_leaf[2]
+
+# amaranthin flower
+amaranthin_flower <- anova_and_tukey(data = hplc_flower, column = "Amaranthin_ratio")
+summary(amaranthin_flower[[1]])
+amaranthin_flower[2]
+
+# betanin leaf
+betanin_leaf <- anova_and_tukey(data = hplc_leaf, column = "Betanin_ratio")
+summary(betanin_leaf[[1]])
+betanin_leaf[2]
+
+# betanin flower
+betanin_flower <- anova_and_tukey(data = hplc_flower, column = "Betanin_ratio")
+summary(betanin_flower[[1]])
+betanin_flower[2]
+
+# betalamic acid leaf
+ba_leaf <- anova_and_tukey(data = hplc_leaf, column = "Betalamic_acid_ratio")
+summary(ba_leaf[[1]])
+ba_leaf[2]
+
+# betalamic acid flower
+ba_flower <- anova_and_tukey(data = hplc_flower, column = "Betalamic_acid_ratio")
+summary(ba_flower[[1]])
+ba_flower[2]
+
+# vulgaxanthin leaf
+vulgaxanthin_leaf <- anova_and_tukey(data = hplc_leaf, column = "Vulgaxanthin_IV_ratio")
+summary(vulgaxanthin_leaf[[1]]) # no significant difference
+
+# vulgaxanthin flower
+vulgaxanthin_flower <- anova_and_tukey(data = hplc_flower, column = "Vulgaxanthin_IV_ratio")
+summary(vulgaxanthin_flower[[1]]) # no significant difference
+```
+
+Plot results amaranthin
+
+```{r}
+# plot
+pa_leaf <- ggplot(data = hplc_quant_normalised %>% filter(tissue == "leaf")) +
+  # geom_point(aes(x = accession, 
+  #                y = Amaranthin_ratio, 
+  #                group = uniq_ind),
+  #            color = "red3",
+  #            position = position_dodge(width = 0.75),
+  #            size = 2.8) +
+  geom_beeswarm(aes(x = accession, 
+                 y = Amaranthin_ratio, 
+                 group = uniq_ind),
+             color = "red3",
+             cex = 1.5,
+             size = 2.8) +
+  geom_segment(data = hplc_AUC_means %>% filter(tissue == "leaf"),
+                aes(x = as.numeric(accession)-0.2, xend = as.numeric(accession)+0.2,
+                    y = amaranthin_mean, yend = amaranthin_mean),
+                color = "black",
+                linewidth = 0.9) +
+  geom_text(data = amaranthin_leaf[[3]],
+          aes(x = as.numeric(factors),
+              y = 280,
+              label = groups),
+          size=8,
+          inherit.aes = F,
+          color = "red3") +
+  coord_cartesian(ylim = c(0, 300)) +
+  labs(y = "Amaranthin\n relative area", color = "Wavelength") +
+  scale_color_manual(values = c("red3", "red3","black","#F0B327")) +
+  theme_classic() +
+  theme(text = element_text(size = 24),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 15),
+        axis.text.y = element_text(size = 14, color = "black"),
+        legend.title = element_blank(),
+        plot.margin = unit(c(0,0,0,0), "cm"),
+        #axis.text.x = element_text(size = 13, angle = 45, vjust = 1, hjust=1),
+        axis.text.x = element_blank(),
+        legend.position = "none") +
+  guides(color = guide_legend(override.aes = list(size = 4)))
+
+
+
+pa_flower <- ggplot(data = hplc_quant_normalised %>% filter(tissue == "flower")) +
+  # geom_point(aes(x = accession, 
+  #                y = Amaranthin_ratio, 
+  #                group = uniq_ind),
+  #            color = "red3",
+  #            position = position_dodge(width = 0.75),
+  #            size = 2.8) +
+  geom_beeswarm(aes(x = accession, 
+                 y = Amaranthin_ratio, 
+                 group = uniq_ind),
+             color = "red3",
+             cex = 1.5,
+             size = 2.8) +
+  geom_segment(data = hplc_AUC_means %>% filter(tissue == "flower"),
+                aes(x = as.numeric(accession)-0.2, xend = as.numeric(accession)+0.2,
+                    y = amaranthin_mean, yend = amaranthin_mean),
+                color = "black",
+                linewidth = 0.9) +
+  geom_text(data = amaranthin_flower[[3]],
+          aes(x = as.numeric(factors),
+              y = 280,
+              label = groups),
+          size=8,
+          inherit.aes = F,
+          color = "red3") +
+  coord_cartesian(ylim = c(0, 300)) +
+  labs(y = "Amaranthin\n relative area", color = "Wavelength") +
+  scale_color_manual(values = c("red3", "red3","black","#F0B327")) +
+  theme_classic() +
+    theme(text = element_text(size = 24),
+        axis.title.x = element_blank(),
+        #axis.title.y = element_text(size = 17),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        legend.title = element_blank(),
+        plot.margin = unit(c(0,0,0,0), "cm"),
+        #axis.text.x = element_text(size = 13, angle = 45, vjust = 1, hjust=1),
+        axis.text.x = element_blank(),
+        legend.position = "none") +
+  guides(color = guide_legend(override.aes = list(size = 4)))
+
+```
+
+Plot results betanin
+
+```{r}
+# plot
+pb_leaf <- ggplot(data = hplc_quant_normalised %>% filter(tissue == "leaf")) +
+    geom_beeswarm(aes(x = accession, 
+                 y = Betanin_ratio, 
+                 group = uniq_ind),
+             color = "red3",
+             cex = 1.5,
+             size = 2.8) +
+  geom_segment(data = hplc_AUC_means %>% filter(tissue == "leaf"),
+                aes(x = as.numeric(accession)-0.2, xend = as.numeric(accession)+0.2,
+                    y = betanin_mean, yend = betanin_mean),
+                color = "black",
+                linewidth = 0.9) +
+  geom_text(data = betanin_leaf[[3]],
+          aes(x = as.numeric(factors),
+              y = 280,
+              label = groups),
+          size=8,
+          inherit.aes = F,
+          color = "red3") +
+  coord_cartesian(ylim = c(0, 300)) +
+  labs(y = "Betanin\n relative area", color = "Wavelength") +
+  scale_color_manual(values = c("red3", "red3","black","#F0B327")) +
+  theme_classic() +
+  theme(text = element_text(size = 24),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 15),
+        axis.text.y = element_text(size = 14, color = "black"),
+        legend.title = element_blank(),
+        plot.margin = unit(c(0,0,0,0), "cm"),
+        #axis.text.x = element_text(size = 13, angle = 45, vjust = 1, hjust=1),
+        axis.text.x = element_blank(),
+        legend.position = "none") +
+  guides(color = guide_legend(override.aes = list(size = 4)))
+
+
+
+pb_flower <- ggplot(data = hplc_quant_normalised %>% filter(tissue == "flower")) +
+    geom_beeswarm(aes(x = accession, 
+                 y = Betanin_ratio, 
+                 group = uniq_ind),
+             color = "red3",
+             cex = 1.5,
+             size = 2.8) +
+  geom_segment(data = hplc_AUC_means %>% filter(tissue == "flower"),
+                aes(x = as.numeric(accession)-0.2, xend = as.numeric(accession)+0.2,
+                    y = betanin_mean, yend = betanin_mean),
+                color = "black",
+                linewidth = 0.9) +
+  geom_text(data = betanin_flower[[3]],
+          aes(x = as.numeric(factors),
+              y = 280,
+              label = groups),
+          size=8,
+          inherit.aes = F,
+          color = "red3") +
+  coord_cartesian(ylim = c(0, 300)) +
+  labs(y = "Betanin\n relative area", color = "Wavelength") +
+  scale_color_manual(values = c("red3", "red3","black","#F0B327")) +
+  theme_classic() +
+    theme(text = element_text(size = 24),
+        axis.title.x = element_blank(),
+        #axis.title.y = element_text(size = 17),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        legend.title = element_blank(),
+        plot.margin = unit(c(0,0,0,0), "cm"),
+        #axis.text.x = element_text(size = 13, angle = 45, vjust = 1, hjust=1),
+        axis.text.x = element_blank(),
+        legend.position = "none") +
+  guides(color = guide_legend(override.aes = list(size = 4)))
+```
+
+Plot results betalamic acid
+
+```{r}
+# plot
+pba_leaf <- ggplot(data = hplc_quant_normalised %>% filter(tissue == "leaf")) +
+    geom_beeswarm(aes(x = accession, 
+                 y = Betalamic_acid_ratio, 
+                 group = uniq_ind),
+             color = "grey40",
+             cex = 1.5,
+             size = 2.8) +
+  geom_segment(data = hplc_AUC_means %>% filter(tissue == "leaf"),
+                aes(x = as.numeric(accession)-0.2, xend = as.numeric(accession)+0.2,
+                    y = betalamic_acid_mean, yend = betalamic_acid_mean),
+                color = "black",
+                linewidth = 0.9) +
+  geom_text(data = ba_leaf[[3]],
+          aes(x = as.numeric(factors),
+              y = 280,
+              label = groups),
+          size=8,
+          inherit.aes = F,
+          color = "grey40") +
+  coord_cartesian(ylim = c(0, 300)) +
+  labs(y = "Betalamic acid\n relative area", color = "Wavelength") +
+  scale_color_manual(values = c("red3", "red3","black","#F0B327")) +
+  theme_classic() +
+  theme(text = element_text(size = 24),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 15),
+        axis.text.y = element_text(size = 14, color = "black"),
+        legend.title = element_blank(),
+        plot.margin = unit(c(0,0,0,0), "cm"),
+        #axis.text.x = element_text(size = 13, angle = 45, vjust = 1, hjust=1),
+        axis.text.x = element_blank(),
+        legend.position = "none") +
+  guides(color = guide_legend(override.aes = list(size = 4)))
+
+
+
+pba_flower <- ggplot(data = hplc_quant_normalised %>% filter(tissue == "flower")) +
+    geom_beeswarm(aes(x = accession, 
+                 y = Betalamic_acid_ratio, 
+                 group = uniq_ind),
+             color = "grey40",
+             cex = 1.5,
+             size = 2.8) +
+  geom_segment(data = hplc_AUC_means %>% filter(tissue == "flower"),
+                aes(x = as.numeric(accession)-0.2, xend = as.numeric(accession)+0.2,
+                    y = betalamic_acid_mean, yend = betalamic_acid_mean),
+                color = "black",
+                linewidth = 0.9) +
+  geom_text(data = ba_flower[[3]],
+          aes(x = as.numeric(factors),
+              y = 280,
+              label = groups),
+          size=8,
+          inherit.aes = F,
+          color = "grey40") +
+  coord_cartesian(ylim = c(0, 300)) +
+  labs(y = "Betalamic acid\n relative area", color = "Wavelength") +
+  scale_color_manual(values = c("red3", "red3","black","#F0B327")) +
+  theme_classic() +
+    theme(text = element_text(size = 24),
+        axis.title.x = element_blank(),
+        #axis.title.y = element_text(size = 17),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        legend.title = element_blank(),
+        plot.margin = unit(c(0,0,0,0), "cm"),
+        #axis.text.x = element_text(size = 13, angle = 45, vjust = 1, hjust=1),
+        axis.text.x = element_blank(),
+        legend.position = "none") +
+  guides(color = guide_legend(override.aes = list(size = 4)))
+```
+
+Plot results vulgaxanthin
+
+```{r}
+# plot
+pv_leaf <- ggplot(data = hplc_quant_normalised %>% filter(tissue == "leaf")) +
+  geom_beeswarm(aes(x = accession, 
+                 y = Vulgaxanthin_IV_ratio, 
+                 group = uniq_ind),
+             color = "#F0B327",
+             method = "swarm",
+             cex = 1.5,
+             size = 2.8) +
+   geom_segment(data = hplc_AUC_means %>% filter(tissue == "leaf"),
+                aes(x = as.numeric(accession)-0.2, xend = as.numeric(accession)+0.2,
+                    y = vulgaxanthin_IV_mean, yend = vulgaxanthin_IV_mean),
+                color = "black",
+                linewidth = 0.9) +
+  ylim(c(0, 300)) +
+  #coord_cartesian(ylim = c(0, 300)) +
+  labs(y = "Vulgaxanthin IV\n relative area", color = "Wavelength") +
+  theme_classic() +
+  scale_x_discrete(labels = c("PI 576485\n leaf","PI 538323\n leaf","PI 686465\n leaf")) +
+  theme(text = element_text(size = 24),
+        axis.title.x = element_blank(),
+        axis.title.y = element_text(size = 15),
+        axis.text.y = element_text(size = 14, color = "black"),
+        axis.text.x = element_text(size = 15, color = "black"),
+        legend.title = element_blank(),
+        plot.margin = unit(c(0,0,0,0), "cm"),
+        legend.position = "none") +
+  guides(color = guide_legend(override.aes = list(size = 4)))
+
+
+
+pv_flower <- ggplot(data = hplc_quant_normalised %>% filter(tissue == "flower")) +
+  geom_beeswarm(aes(x = accession, 
+                 y = Vulgaxanthin_IV_ratio, 
+                 group = uniq_ind),
+             color = "#F0B327",
+             method = "swarm",
+             cex = 1.5,
+             size = 2.8) +
+   geom_segment(data = hplc_AUC_means %>% filter(tissue == "flower"),
+                aes(x = as.numeric(accession)-0.2, xend = as.numeric(accession)+0.2,
+                    y = vulgaxanthin_IV_mean, yend = vulgaxanthin_IV_mean),
+                color = "black",
+                linewidth = 0.9) +
+  ylim(c(0, 300)) +
+  #coord_cartesian(ylim = c(0, 300)) +
+  labs(y = "Vulgaxanthin IV\n relative area", color = "Wavelength") +
+  theme_classic() +
+  scale_x_discrete(labels = c("PI 576485\n flower","PI 538323\n flower","PI 686465\n flower")) +
+    theme(text = element_text(size = 24),
+        axis.title.x = element_blank(),
+        #axis.title.y = element_text(size = 17),
+        legend.title = element_blank(),
+        plot.margin = unit(c(0,0,0,0), "cm"),
+        axis.title.y = element_blank(),
+        axis.text.y = element_blank(),
+        axis.text.x = element_text(size = 15, color = "black"),
+        legend.position = "none") +
+  guides(color = guide_legend(override.aes = list(size = 4)))
+```
+
+
+
+Overview over all quantified metabolites including photometric quantification
+
+```{r}
+overview_patchplot <- p_leaf + p_flower + pa_leaf + pa_flower + pb_leaf + pb_flower +
+  pba_leaf + pba_flower + pv_leaf + pv_flower +
+  plot_annotation(tag_levels = "a", tag_prefix = "(", tag_suffix = ")") +
+  plot_layout(ncol = 2,
+              byrow = T,
+              guides = "collect") &
+  theme(legend.position = "bottom",
+        legend.direction = "vertical",
+        plot.tag = element_text(vjust = 2, size = 17, face = "bold"))
+
+ggsave(filename = "../../plots/betalain_quantification/overview_betalain_quantification.png",
+       plot = overview_patchplot,
+       bg = "white",
+       dpi = 450,
+       width = 10,
+       height = 13)
+```
+
+
+Combine specific plots
+
+
+```{r}
+# combine for figure
+photo_hplc_patchplot <- plot_spacer() / (p_leaf + p_flower) / (pa_leaf + pa_flower) / (pv_leaf + pv_flower) +
+  plot_annotation(tag_levels = list(c("(b)","(c)","(d)","(e)","(f)","(g)"))) +
+  plot_layout(widths = c(0.5, 0.5),
+              guides = "collect") &
+  theme(legend.position = "bottom",
+        plot.tag = element_text(size = 17, face = "bold"))
+
+
+
+ggsave(filename = "../../plots/betalain_quantification/quantification_without_picture.png",
+       plot = photo_hplc_patchplot,
+       bg = "white",
+       dpi = 450,
+       width = 10,
+       height = 10)
+```
+
+
+Analyse HPLC results from amaranth roots:
+
+```{r}
+# hplc quantification
+root_quant <- read_excel(path = "../../raw_data/betalain_quantification/Betalain_quantification_summary.xlsx",
+                                      sheet = "transgenic_roots_LC-MS_quantification")
+root_quant <- root_quant %>%
+  mutate(sample_id = paste0("plate_", plate, "_", root_type)) %>%
+  mutate(sample_id = factor(sample_id, levels = c("plate_3_white", "plate_3_red", "plate_4_white", "plate_4_red")))
+
+# normalise for solvent volume and input weight
+norm_factor <- (75/275) * (0.0167/0.0082) # initial solvent volume 75 instead of 275, normalised input weight 8.2 mg instead of 16.7 mg
+root_quant_norm <- root_quant %>%
+  mutate(Amaranthin_ratio = Amaranthin_ratio * norm_factor,
+         plant_replicate = factor(plant_replicate))
+
+
+# plot comparison
+root_quant_plot <- ggplot(data = root_quant_norm) +
+  geom_col(aes(x = plant_replicate,
+               y = Amaranthin_ratio,
+               fill = root_type),
+           color = "black",
+           position = position_dodge2(reverse = T)) +
+  geom_text(aes(x = plant_replicate,
+                y = Amaranthin_ratio,
+                label = round(Amaranthin_ratio,2),
+                group = root_type),
+            position = position_dodge2(width = 0.9, reverse = T),
+            vjust = -0.2,
+            size = 5) +
+  scale_x_discrete(labels = c("Ind 1", "Ind 2")) +
+  coord_cartesian(ylim = c(0, 450)) +
+  labs(y = "Amaranthin\n relative area", x = "") +
+  scale_fill_manual(values = c("red3", "beige")) +
+  theme_classic() +
+  theme(text = element_text(size = 24),
+        legend.position = "none")
+root_quant_plot
+
+ggsave(filename = "../../plots/betalain_quantification/root_quantification.png",
+       plot = root_quant_plot,
+       bg = "white",
+       dpi = 450,
+       width = 7,
+       height = 5)
+
+```
+
+

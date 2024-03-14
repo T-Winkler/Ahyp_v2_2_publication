@@ -22,6 +22,8 @@ pathway_genes <- read.csv(file = "data/manual_sheets/color_pathway_genes.csv", h
 colnames(pathway_genes) <- c("pathway_gene", "pathway", "gene_id")
 betalain.genes <- pathway_genes %>%
   filter(pathway == "Betalain")
+flavonoid.genes <- pathway_genes %>%
+  filter(pathway == "Flavonoid")
 
 ```
 
@@ -87,8 +89,8 @@ plot_betalain_counts <- function(gene_ID_list, gene_name_list){
         filter(transcript_id == gene_ID_list[i])
       # plot counts
       output[[i]] <- ggplot(data=transcript_tpm) +
-        geom_col(aes(x = bulk, 
-                     y = tpm, 
+        geom_col(aes(x = bulk,
+                     y = tpm,
                      fill = bulk)) +
         theme_classic() +
         scale_fill_manual(values = c("chartreuse3", "red3", "chartreuse3", "red3"), guide = "none") +
@@ -102,7 +104,7 @@ plot_betalain_counts <- function(gene_ID_list, gene_name_list){
              y = "TPM",
              shape = "") +
         theme(axis.title.y = element_text(size = 30),
-              axis.text.y = element_text(size = 25), 
+              axis.text.y = element_text(size = 25),
               title = element_text(size = 25),
               legend.position = c("bottom"),
               axis.title.x = element_blank(),
@@ -117,10 +119,10 @@ betalain_plots <- plot_betalain_counts(gene_ID_list = betalain_quant$transcript_
                                        gene_name_list = betalain_quant$pathway_gene[1:(length(betalain_quant$transcript_id)/4)])
 
 
-patchplot <- betalain_plots[[8]] + betalain_plots[[9]] + betalain_plots[[11]] + 
+patchplot <- betalain_plots[[8]] + betalain_plots[[9]] + betalain_plots[[11]] +
   betalain_plots[[10]] + betalain_plots[[5]] + betalain_plots[[4]] + betalain_plots[[2]] + betalain_plots[[3]] +
   plot_layout(nrow = 3) +
-  plot_annotation(tag_levels = "A") & 
+  plot_annotation(tag_levels = "A") &
   theme(plot.margin = unit(c(0.5,0.5,0.5,0.5), "cm"),
         plot.tag = element_text(size = 35))
 
@@ -153,8 +155,8 @@ plot_betalain_counts <- function(gene_ID_list, gene_name_list){
       }
       # plot counts
       output[[i]] <- ggplot(data=transcript_tpm) +
-        geom_col(aes(x = bulk, 
-                     y = tpm, 
+        geom_col(aes(x = bulk,
+                     y = tpm,
                      fill = bulk)) +
         theme_classic() +
         scale_fill_manual(values = c("chartreuse3", "red3", "chartreuse3", "red3"), guide = "none") +
@@ -164,7 +166,7 @@ plot_betalain_counts <- function(gene_ID_list, gene_name_list){
              y = "TPM",
              shape = "") +
         theme(axis.title.y = element_text(size = 43),
-              axis.text.y = element_text(size = 38), 
+              axis.text.y = element_text(size = 38),
               title = element_text(size = 45),
               legend.position = c("bottom"),
               axis.title.x = element_blank(),
@@ -219,14 +221,76 @@ ggplot(data=regulator_quant) +
 
 ggsave(filename = "plots/flower_mapping_expression/flower_expression_grid.png",
        width = 4,
-       height = 8, 
+       height = 8,
        dpi = 500)
 
 ```
 
+Investigate flavonoid pathway gene expression.
+
+```{r}
+# check gene expression only for flavonoid pathway genes
+flavonoid_quant <- kallisto_quant %>%
+  filter(gene_id %in% flavonoid.genes$gene_id)
+
+# add flavonoid_gene information
+flavonoid_quant <- left_join(flavonoid_quant, flavonoid.genes, by = "gene_id")
+
+# which genes are not expressed? Expression under 0.5 TPM in all samples
+flavonoid_quant %>%
+  group_by(transcript_id) %>%
+  summarise(pathway_gene = pathway_gene,
+            max_tpm = max(tpm)) %>%
+  unique() %>%
+  mutate(expressed = ifelse(max_tpm >= 0.5, "expressed", "no expression"))
+
+# flavonoid pathway gene expression
+flavonoid_grid <- flavonoid_quant %>%
+  filter(!(pathway_gene %in% c("AmMYBl1"))) %>%
+  mutate(label = paste0(pathway_gene, " (", transcript_id, ")"))
+  #mutate(label = paste0(pathway_gene, substr(transcript_id, 10,11)))
+
+# flavonoid_grid$label <- factor(flavonoid_grid$label, levels = rev(c("PAL_1.1","PAL_2.1",
+#                                                                   "C4H_1.1","C4H_1.2",
+#                                                                   "C4H_2.1","C4H_3.1","C4H_3.2",
+#                                                                  "4CL_1.1","4CL_2.1","CHS.1","CHS.2",
+#                                                                  "CHI1.1","F3-H_1.1","F3-H_2.1",
+#                                                                  "F3-H_3.1","F3-H_3.2","F3-H_4.1",
+#                                                                  "F3-H_5.1","F3H.1", "FLS.1",
+#                                                                  "FLS.2","DFR.1","ANS.1","LAR.1")))
+flavonoid_grid$label <- factor(flavonoid_grid$label, levels = rev(c("PAL_1 (AHp012752.1)","PAL_2 (AHp021980.1)",
+                                                                  "C4H_1 (AHp013217.1)","C4H_1 (AHp013217.2)",
+                                                                  "C4H_2 (AHp022384.1)","C4H_3 (AHp022382.1)",
+                                                                  "C4H_3 (AHp022382.2)","4CL_1 (AHp014409.1)",
+                                                                  "4CL_2 (AHp020962.1)","CHS (AHp004305.1)",
+                                                                  "CHS (AHp004305.2)","CHI1 (AHp009962.1)",
+                                                                  "F3-H_1 (AHp017497.1)","F3-H_2 (AHp022122.1)",
+                                                                 "F3-H_3 (AHp003152.1)","F3-H_3 (AHp003152.2)",
+                                                                 "F3-H_4 (AHp022120.1)", "F3-H_5 (AHp022123.1)",
+                                                                 "F3H (AHp006454.1)", "FLS (AHp008991.1)",
+                                                                 "FLS (AHp008991.2)","DFR (AHp009303.1)",
+                                                                 "LAR (AHp017409.1)","ANS (AHp021795.1)")))
 
 
+# plot each gene, but only the comparison between red and green flower
+ggplot(data=flavonoid_grid) +
+  geom_tile(aes(x = bulk, y = label, fill = tpm)) +
+  scale_fill_distiller(palette = "RdYlBu", trans = "log10", breaks = c(3,30,300)) +
+  geom_text(aes(x = bulk, y = label, label = sprintf("%0.2f", round(tpm, digits = 2))),
+            size = 3.5) +
+  labs(fill = "TPM") +
+  scale_x_discrete(labels = c("Regulator_green", "Regulator_red", "Biosynthesis_green", "Biosynthesis_red")) +
+  theme_classic() +
+  expand_limits(fill = 300) +
+  theme(text = element_text(size=22),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank(),
+        axis.text.x = element_text(angle = 45, vjust = 1, hjust=1),
+        legend.position = "right",
+        legend.direction = "vertical")
 
-
-
-
+ggsave(filename = "plots/flower_mapping_expression/flavonoid_expression_grid.png",
+       width = 8,
+       height = 8,
+       dpi = 500)
+```

@@ -320,6 +320,11 @@ t_species <- t %<+% df +
 t_species$data$label[t_species$data$label == "Bv_jkkr"] <- "BvMYB1"
 # AmMYBl1
 t_species$data$label[t_species$data$label == "AHp014591.1"] <- "AmMYBl1"
+# betalain MYBs
+t_species$data$label[t_species$data$label == "AHp022773.1"] <- "AhMYB2.1"
+t_species$data$label[t_species$data$label == "AHp022773.2"] <- "AhMYB2.2"
+t_species$data$label[t_species$data$label == "AHp016530.1"] <- "AhMYB3.1"
+t_species$data$label[t_species$data$label == "AHp016531.1"] <- "AhMYB4.1"
 
 t_species
 
@@ -333,60 +338,79 @@ plot_clade <- function(node, label){
   # subset angles from ggplot object
   angles <- t_species$data$angle
   # mark labeled subgroup in the tree between two tips,
-  # calculate the angle as average between the two tips
-  geom_cladelab(node=node, 
-             barsize=0.5, 
-             offset = 4, 
-             fontsize=5, 
-             extend=0.1, 
-             offset.text = 0.2, 
+  geom_cladelab(node=node,
+             barsize=0.5,
+             offset = 4,
+             fontsize=4.5,
+             extend=0.1,
+             offset.text = 0.2,
              label = label,
              angle = angles[node])
 }
 
+# function to create smaller labels with larger labels
+plot_clade2 <- function(node, label, label2 = ""){
+  # subset angles from ggplot object
+  angles <- t_species$data$angle
+  # mark labeled subgroup in the tree between two tips,
+  geom_cladelab(node=node,
+             barsize=0.5,
+             offset = 4,
+             fontsize = c(4.5,2.8),
+             extend = 0.1,
+             offset.text = 0.2,
+             vjust = c(0,1.5),
+             label = c(label, label2),
+             # adjust angle based on position on tree
+             angle = c((angles[node]), ifelse(angles[node] <= 90 | angles[node] >= 270,
+                                              (angles[node]) -1,
+                                              (angles[node]) +1)))
+}
+
 # label clades according to their clade number
 t_species +
-  plot_clade(331,'S22') +
+  plot_clade2(331,'S22', "Defense, stress response") +
   plot_clade(342,'S23') +
   plot_clade(347,'3R') +
-  plot_clade(357,'S21') +
+  plot_clade2(357,'S21', "Cell wall, lignin") +
   plot_clade(379,'4R') +
-  plot_clade(385,'S25') +
-  plot_clade(397,'S18') +
+  plot_clade2(385,'S25', "Embryogenesis") +
+  plot_clade2(397,'S18', "Anther development") +
   plot_clade(422,'S19+S20') +
-  plot_clade(308,'S16') +
+  plot_clade2(308,"S16", "Photomorphogenesis") +
   plot_clade(492,'S10') +
   plot_clade(487,'S24') +
-  plot_clade(501,'S11') +
-  plot_clade(528,'S12') +
-  plot_clade(513,'S9') +
-  plot_clade(460,'S13') +
-  plot_clade(446,'S4*') +
-  plot_clade(568,'S14') +
-  plot_clade(542,'S3') +
-  plot_clade(537,'S2') +
-  plot_clade(548,'S7*') +
-  plot_clade(603,'S6*') +
-  plot_clade(606,'S15') +
-  plot_clade(592,'S5*') +
-  plot_clade(476,'S8') +
-  plot_clade(554,'S1') +
+  plot_clade2(501,'S11', "Defense, stress response") +
+  plot_clade2(528,'S12', "Glucosinolate biosynthesis") +
+  plot_clade2(513,'S9', "Development") +
+  plot_clade2(460,'S13', "Mucilage, lignin") +
+  plot_clade2(446,'S4', "Phenylpropanoid biosynthesis") +
+  plot_clade2(568,'S14', "Axillary meristem, root growth") +
+  plot_clade2(542,'S3', "Lignin biosynthesis") +
+  plot_clade2(537,'S2', "Abiotic stress response") +
+  plot_clade2(548,'S7', "Flavonol biosynthesis") +
+  plot_clade2(603,'S6', "Anthocyanin biosynthesis") +
+  plot_clade2(606,'S15', "Development, cell fate") +
+  plot_clade2(592,'S5', "Proanthocyanidin biosynthesis") +
+  plot_clade2(476,'S8', "Lignin biosynthesis") +
+  plot_clade2(554,'S1', "Stress response") +
   plot_clade(415,'S17') +
   plot_clade(419,'S17') +
   plot_clade(439,'S17') +
-  plot_clade(598,'BvMYB1*') +
-  plot_clade(588,'AtMYB5*')
-  
+  plot_clade2(598,'BvMYB1', "Betalain biosynthesis") +
+  plot_clade2(588,'AtMYB5', "Development, flavonoid biosynthesis") +
+  theme(plot.margin = margin(1,2,1,1, "cm"))
+
 ggsave(filename = "plots/MYB_phylogenetic_tree.png",
-       width = 10,
-       height = 10,
-       dpi = 500)
+       width = 14,
+       height = 14,
+       dpi = 600)
 
 ggsave(filename = "plots/MYB_phylogenetic_tree.pdf",
        device = "pdf",
-       width = 10,
-       height = 10,
-       dpi = 500)
+       width = 12,
+       height = 12,
+       dpi = 600)
 ```
 
 
@@ -449,4 +473,53 @@ ggsave(filename = "plots/AmMYB2_figure/S6_betalain_myb_S6.png",
        bg = "white")
 ```
 
+Add matrix visualisation of important residues:
 
+```{r}
+residue <- 80:136
+# interaction motif
+interaction_motif <- rep(0, length(residue))
+interact_residues <- c(92,93,96,100,111,115)
+interaction_motif[interact_residues-79] <- 2
+# additional zimmermann residues
+zimmermann <- rep(0, length(residue))
+zimmermann_residues <- c(88,89,92,95,97,99,100,102,108,110,111,117,123,124,128)
+zimmermann[zimmermann_residues-79] <- 1
+# sakuta residues
+sakuta <- rep(0, length(residue))
+sakuta_residues <- c(93,96,101,114)
+sakuta[sakuta_residues-79] <- 1
+# hatlestad residues
+hatlestad <- rep(0, length(residue))
+hatlestad_residues <- c(92,93,96,97,99,100,111,115)
+hatlestad[hatlestad_residues-79] <- 1
+
+# prepare dataframe
+df <- data.frame(residue, interaction_motif, hatlestad, zimmermann, sakuta)
+df_melt <- melt(df, id.vars = "residue")
+df_melt$value <- as.factor(df_melt$value)
+
+residue_raster <- ggplot(data = df_melt) +
+  geom_tile(aes(x = residue,
+                y = variable,
+                fill = value),
+            width = 0.7,
+            height = 0.7,
+            linewidth = 0.5,
+            color = "black") +
+  theme_classic() +
+  scale_fill_manual(values = c("white", "black","red3")) +
+  labs(x = "",
+       y = "") +
+  theme(axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank(),
+        legend.position = "none")
+residue_raster
+
+
+ggsave(filename = "plots/AmMYB2_figure/residue_raster.png",
+       width = 9,
+       height = 1.5,
+       dpi = 400)
+```
