@@ -1,6 +1,13 @@
 ## Publication repository
 ### Isoform-resolved genome annotation enables mapping of tissue-specific betalain regulation and anthocyanin regulator co-option in amaranth
 
+Tom S. Winkler, Susanne K. Vollmer, Nadine Dyballa-Rukes, Sabine Metzger and Markus G Stetter
+
+* Betalains are coloring pigments produced in some families of the order Caryophyllales, where they replace anthocyanins as coloring pigments. While the betalain pathway itself is well studied, the tissue-specific regulation of the pathway remains mostly unknown.
+* We enhance the high-quality Amaranthus hypochondriacus reference genome and produce a substantially more complete genome annotation, incorporating isoform details. We annotate betalain and anthocyanin pathway genes along with their regulators in amaranth and map the genetic control and tissue-specific regulation of the betalain pathway.
+* Our improved genome annotation allowed us to identify causal mutations that lead to a knock-out of red betacyanins in natural accessions of amaranth. We reveal the tissue-specific regulation of flower color via a previously uncharacterized MYB transcription factor, AhMYB2. Downregulation of AhMYB2 in the flower leads to reduced expression of key betalain enzyme genes and loss of red flower color.
+* Our improved amaranth reference genome represents the most complete genome of amaranth to date and a valuable resource for betalain and amaranth research. High similarity of the flower betalain regulator AhMYB2 to anthocyanin regulators and a partially conserved interaction motif support the co-option of anthocyanin regulators for the betalain pathway as possible reason for mutual exclusiveness of the two pigments.
+
 Repository for all code used in the study.
 
 code/ - all scripts used for the study\
